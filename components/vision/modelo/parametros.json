@@ -1,0 +1,13 @@
+{
+  "clases": [
+    "fuego",
+    "humo",
+    "normal"
+  ],
+  "tam_imagen": 96,
+  "escala_entrada": 1.0,
+  "cero_entrada": -128,
+  "escala_salida": 0.00390625,
+  "cero_salida": -128,
+  "bytes": 646192
+}

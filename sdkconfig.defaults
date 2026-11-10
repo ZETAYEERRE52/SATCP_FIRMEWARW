@@ -1,0 +1,48 @@
+# Placa ESP32-S3 WROOM CAM N16R8: 16 MB de flash, 8 MB de PSRAM octal
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# PSRAM octal: buffers de la cámara y memoria de trabajo del modelo
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Particiones: aplicación de 6 MB (firmware + modelo de visión)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Bluetooth LE (NimBLE, solo periférico) con su memoria en PSRAM
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# CONFIG_BT_NIMBLE_ROLE_CENTRAL is not set
+# CONFIG_BT_NIMBLE_ROLE_OBSERVER is not set
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+
+# WebSocket para el transporte Wi-Fi de la app
+CONFIG_HTTPD_WS_SUPPORT=y
+
+# Wi-Fi y lwIP pueden usar la PSRAM: deja más RAM interna para la cámara y el Bluetooth
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# Búfer de envío TCP de 11,5 KB (8 segmentos): caben dos cuadros QVGA de la vista en vivo (~5 KB).
+# Con 32 KB se encolaban ~7 cuadros viejos (más retraso) y acaparaban los búferes de Wi-Fi
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11520
+
+# Los dos servidores (puerto 80 con 4 clientes y puerto 81 con 2) ocupaban justo las 10 conexiones
+# por defecto: con una conexión muerta, la app no podía volver a conectarse durante ~30 s
+CONFIG_LWIP_MAX_SOCKETS=16
+
+# Núcleos: el 0 para el sistema de seguridad (temperatura, radar, cámara, máquina de estados) y el 1
+# para todas las comunicaciones (radio Wi-Fi, controlador y pila Bluetooth, lwIP, mDNS, servidores).
+# Así una ráfaga de red nunca retrasa la vigilancia, y la inferencia de la cámara no frena la red
+CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1=y
+CONFIG_BT_CTRL_PINNED_TO_CORE_1=y
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_1=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
+CONFIG_MDNS_TASK_AFFINITY_CPU1=y
+
+# Nombres de archivo largos en la SD (carpetas del dataset)
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255

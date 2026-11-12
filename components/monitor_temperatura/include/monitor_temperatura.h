@@ -54,8 +54,8 @@ typedef struct {
     UBaseType_t prioridad_tarea;
     BaseType_t nucleo_tarea;
 
-    float margen_superacion_c;      // Con línea base: superarla por este margen es anómalo
-    float margen_descarte_c;        // Con línea base: bajar este margen la descarta (cocción terminada)
+    float margen_superacion_c;      // Con línea base (temperatura ambiente): superarla por este margen es anómalo
+    float margen_descarte_c;        // Con línea base: bajar este margen la descarta (el ambiente se enfrió)
 } monitor_temperatura_config_t;
 
 #define MONITOR_TEMPERATURA_CONFIG_POR_DEFECTO() {          \
@@ -74,8 +74,8 @@ typedef struct {
     .muestras_normalizacion = 300,                          \
     .prioridad_tarea = 10,                                  \
     .nucleo_tarea = 0,      /* Núcleo del sistema; el 1 es de las comunicaciones */                                      \
-    .margen_superacion_c = 10.0f,                           \
-    .margen_descarte_c = 20.0f,                             \
+    .margen_superacion_c = 4.0f,                            \
+    .margen_descarte_c = 8.0f,                              \
 }
 
 /**

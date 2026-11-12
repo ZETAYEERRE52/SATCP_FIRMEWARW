@@ -26,9 +26,9 @@ typedef struct {
     uint32_t intervalo_revalidacion_s;      // Con anomalía activa, volver a verificar cada X s
     uint32_t intervalo_minimo_revision_s;   // Entre inicios de revisión por saltos seguidos (la crítica no espera)
     uint32_t silencio_tras_cancelacion_s;   // Tras cancelar una alerta, no repetirla durante X s
-    uint32_t estabilidad_autocalibracion_s; // Tiempo con temperatura estable para autocalibrar
+    uint32_t estabilidad_autocalibracion_s; // Tiempo con temperatura estable para tomarla como línea base
     float banda_estabilidad_c;              // Variación máxima (máx - mín) considerada "misma temperatura"
-    float temperatura_minima_autocal_c;     // Por debajo la estufa se considera apagada
+    float temperatura_maxima_linea_base_c;  // Solo la temperatura ambiente (estufa apagada) es línea base
     UBaseType_t prioridad_tarea;
     BaseType_t nucleo_tarea;                // 0: junto a la temperatura y la cámara; el 1 es de las comunicaciones
 } maquina_estados_config_t;
@@ -39,9 +39,9 @@ typedef struct {
     .intervalo_revalidacion_s = 30,             \
     .intervalo_minimo_revision_s = 15,          \
     .silencio_tras_cancelacion_s = 300,         \
-    .estabilidad_autocalibracion_s = 600,       \
-    .banda_estabilidad_c = 5.0f,                \
-    .temperatura_minima_autocal_c = 50.0f,      \
+    .estabilidad_autocalibracion_s = 180,       \
+    .banda_estabilidad_c = 1.5f,                \
+    .temperatura_maxima_linea_base_c = 24.0f,   \
     .prioridad_tarea = 8,                       \
     .nucleo_tarea = 0,                          \
 }

@@ -94,14 +94,15 @@ static void atender_eventos(TickType_t espera)
     }
 }
 
-// Autocalibración: la temperatura estimada no se sale de la banda durante el tiempo configurado
+// Autocalibración: la temperatura ambiente (no más de temperatura_maxima_linea_base_c) no se sale de la
+// banda durante el tiempo configurado. Vale también con una anomalía activa: así una subida lenta del
+// ambiente, ya revisada, puede reemplazar a la línea base vieja tras la verificación de la cámara
 static bool temperatura_estable(int64_t ahora_us, float *temperatura_estable_c)
 {
     const maquina_estados_config_t *cfg = &s_maquina.config;
 
     float t;
-    if (s_maquina.anomalia_activa || !monitor_temperatura_obtener_estimada(&t)
-        || t < cfg->temperatura_minima_autocal_c) {
+    if (!monitor_temperatura_obtener_estimada(&t) || t > cfg->temperatura_maxima_linea_base_c) {
         reiniciar_estabilidad();
         return false;
     }
@@ -211,7 +212,7 @@ static void ejecutar_monitoreo(void)
 
     float temperatura_estable_c;
     if (temperatura_estable(ahora, &temperatura_estable_c)) {
-        ESP_LOGI(TAG, "Temperatura estable en %.1f °C durante %" PRIu32 " s sin alertas",
+        ESP_LOGI(TAG, "Temperatura ambiente estable en %.1f °C durante %" PRIu32 " s: se verifica con la cámara",
                  temperatura_estable_c, s_maquina.config.estabilidad_autocalibracion_s);
         preparar_alerta(ORIGEN_AUTOCALIBRACION, VISION_SIN_RIESGO, temperatura_estable_c);
         cambiar_estado(ESTADO_SISTEMA_AUTOCALIBRACION);

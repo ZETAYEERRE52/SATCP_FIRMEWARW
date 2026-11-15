@@ -20,14 +20,13 @@ const char *accion_nombre_origen(origen_alerta_t origen)
     return "desconocido";
 }
 
-// El teléfono recibe la alerta consultando la máquina de estados: la página web la muestra
-// (con vibración y sonido) y el Bluetooth la notifica cada 15 s hasta que se responde
+// La app recibe la alerta en el evento de estado (Wi-Fi y Bluetooth) hasta que se responde
 esp_err_t accion_enviar_alerta(const alerta_t *alerta)
 {
     ESP_LOGW(TAG, "ALERTA publicada para Wi-Fi y Bluetooth: %s, %.1f °C, %.1f °C/min, origen %s",
              accion_nombre_vision(alerta->vision), alerta->temperatura_c, alerta->tasa_c_por_min,
              accion_nombre_origen(alerta->origen));
-    ESP_LOGW(TAG, "Para responder: botón en la página web, comando BLE 'responder' o botón BOOT");
+    ESP_LOGW(TAG, "Para responder: desde la app (comando 'responder') o con el botón BOOT");
     return ESP_OK;
 }
 
@@ -39,7 +38,7 @@ esp_err_t accion_ejecutar_cierre(void)
 
 esp_err_t accion_reportar_cierre(const reporte_cierre_t *reporte)
 {
-    ESP_LOGW(TAG, "[SIMULADO] Reporte de cierre (origen %s): %s a %.1f °C, alerta en t=%" PRId64
+    ESP_LOGW(TAG, "Reporte de cierre (origen %s): %s a %.1f °C, alerta en t=%" PRId64
              " s, cierre en t=%" PRId64 " s, resultado %s",
              accion_nombre_origen(reporte->alerta.origen),
              accion_nombre_vision(reporte->alerta.vision), reporte->alerta.temperatura_c,

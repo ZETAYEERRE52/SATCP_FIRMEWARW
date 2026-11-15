@@ -16,7 +16,8 @@ extern "C" {
  * supone (guardado en NVS) y solo cambia por un cierre del sistema o por un rearme.
  */
 typedef struct {
-    gpio_num_t pin_pulso;           // Ánodo del LED del optoacoplador (con su resistencia); activo en alto
+    gpio_num_t pin_pulso;           // Entrada IN del módulo de relé (u optoacoplador)
+    bool activo_en_bajo;            // true: el módulo se activa con IN en bajo (módulos de relé comunes)
     uint32_t duracion_pulso_ms;     // Cuánto se "mantiene presionado" el botón
     gpio_num_t pin_posicion;        // Final de carrera o sensor de posición; GPIO_NUM_NC si no hay
     int nivel_cerrada;              // Nivel que lee pin_posicion con la válvula cerrada

@@ -1,18 +1,14 @@
 #include <inttypes.h>
-#include <stdio.h>
-#include <string.h>
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "ld2410.h"
 
 static const char *TAG = "LD2410";
 
 #define TAM_BUFFER_UART         1024
-#define TAM_COLA_EVENTOS_UART   32
 #define TAM_LECTURA_UART        64
 #define TAM_PILA_TAREA          3072
 #define MAX_DATOS_TRAMA         64
@@ -40,14 +36,6 @@ static struct {
     TaskHandle_t tarea;
     portMUX_TYPE cerrojo;
     ld2410_lectura_t ultima;
-    volatile uint32_t bytes_recibidos;
-    volatile uint32_t tramas_validas;
-    volatile uint32_t cabeceras;
-    volatile uint32_t desbordes;
-    volatile uint32_t cortes;
-    QueueHandle_t cola_uart;
-    uint8_t muestra[LD2410_TAM_MUESTRA];
-    size_t bytes_muestra;
 
     fase_trama_t fase;
     size_t indice;
@@ -87,7 +75,6 @@ static void interpretar_datos(const uint8_t *datos, uint16_t longitud)
     taskENTER_CRITICAL(&s_radar.cerrojo);
     s_radar.ultima = lectura;
     taskEXIT_CRITICAL(&s_radar.cerrojo);
-    s_radar.tramas_validas++;
 }
 
 static void procesar_byte(uint8_t byte)
@@ -96,7 +83,6 @@ static void procesar_byte(uint8_t byte)
     case FASE_CABECERA:
         if (byte == CABECERA[s_radar.indice]) {
             if (++s_radar.indice == sizeof(CABECERA)) {
-                s_radar.cabeceras++;
                 s_radar.fase = FASE_LONGITUD;
                 s_radar.indice = 0;
                 s_radar.longitud = 0;
@@ -137,38 +123,11 @@ static void procesar_byte(uint8_t byte)
     }
 }
 
-// Solo para el diagnóstico: distingue datos perdidos por no leer a tiempo de una línea en bajo
-static void atender_eventos_uart(void)
-{
-    uart_event_t evento;
-    while (xQueueReceive(s_radar.cola_uart, &evento, 0) == pdTRUE) {
-        if (evento.type == UART_FIFO_OVF || evento.type == UART_BUFFER_FULL) {
-            s_radar.desbordes++;
-        } else if (evento.type == UART_BREAK) {
-            s_radar.cortes++;
-        }
-    }
-}
-
-static void guardar_muestra(const uint8_t *datos, size_t bytes)
-{
-    const size_t copiados = bytes < LD2410_TAM_MUESTRA ? bytes : LD2410_TAM_MUESTRA;
-    taskENTER_CRITICAL(&s_radar.cerrojo);
-    memcpy(s_radar.muestra, datos + bytes - copiados, copiados);
-    s_radar.bytes_muestra = copiados;
-    taskEXIT_CRITICAL(&s_radar.cerrojo);
-}
-
 static void tarea_ld2410(void *arg)
 {
     uint8_t buffer[TAM_LECTURA_UART];
     for (;;) {
         const int leidos = uart_read_bytes(s_radar.config.puerto, buffer, sizeof(buffer), pdMS_TO_TICKS(100));
-        atender_eventos_uart();
-        if (leidos > 0) {
-            s_radar.bytes_recibidos += (uint32_t)leidos;
-            guardar_muestra(buffer, (size_t)leidos);
-        }
         for (int i = 0; i < leidos; i++) {
             procesar_byte(buffer[i]);
         }
@@ -191,8 +150,8 @@ esp_err_t ld2410_iniciar(const ld2410_config_t *config)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    ESP_RETURN_ON_ERROR(uart_driver_install(config->puerto, TAM_BUFFER_UART, 0, TAM_COLA_EVENTOS_UART,
-                                            &s_radar.cola_uart, 0), TAG, "no se pudo instalar la UART");
+    ESP_RETURN_ON_ERROR(uart_driver_install(config->puerto, TAM_BUFFER_UART, 0, 0, NULL, 0), TAG,
+                        "no se pudo instalar la UART");
     esp_err_t ret = uart_param_config(config->puerto, &config_uart);
     if (ret == ESP_OK) {
         ret = uart_set_pin(config->puerto, config->pin_tx, config->pin_rx, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
@@ -235,31 +194,6 @@ bool ld2410_obtener_lectura(ld2410_lectura_t *lectura)
     taskEXIT_CRITICAL(&s_radar.cerrojo);
 
     return lectura->marca_us != 0 && esp_timer_get_time() - lectura->marca_us <= VIGENCIA_LECTURA_US;
-}
-
-void ld2410_obtener_contadores(uint32_t *bytes_recibidos, uint32_t *tramas_validas)
-{
-    *bytes_recibidos = s_radar.bytes_recibidos;
-    *tramas_validas = s_radar.tramas_validas;
-}
-
-void ld2410_obtener_diagnostico(ld2410_diagnostico_t *diagnostico)
-{
-    uint8_t muestra[LD2410_TAM_MUESTRA];
-    taskENTER_CRITICAL(&s_radar.cerrojo);
-    const size_t bytes_muestra = s_radar.bytes_muestra;
-    memcpy(muestra, s_radar.muestra, bytes_muestra);
-    taskEXIT_CRITICAL(&s_radar.cerrojo);
-
-    diagnostico->bytes_recibidos = s_radar.bytes_recibidos;
-    diagnostico->cabeceras = s_radar.cabeceras;
-    diagnostico->tramas_validas = s_radar.tramas_validas;
-    diagnostico->desbordes = s_radar.desbordes;
-    diagnostico->cortes = s_radar.cortes;
-    diagnostico->muestra_hex[0] = '\0';
-    for (size_t i = 0; i < bytes_muestra; i++) {
-        snprintf(&diagnostico->muestra_hex[3 * i], 4, "%02X ", muestra[i]);
-    }
 }
 
 int ld2410_leer_salida(void)

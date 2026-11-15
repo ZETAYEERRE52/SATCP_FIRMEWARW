@@ -66,7 +66,7 @@ static void tarea_boton_calibracion(void *arg) {
             continue;   // Rebote
         }
 
-        // Mientras no haya app de celular, el botón hace de respuesta del usuario y de rearme
+        // Respaldo de la app: el botón también responde la alerta y rearma tras un cierre
         const estado_sistema_t estado = maquina_estados_obtener_estado();
         if (estado == ESTADO_SISTEMA_ALERTA_USUARIO) {
             maquina_estados_notificar_respuesta_usuario();
@@ -122,7 +122,7 @@ extern "C" void app_main(void) {
         ESP_LOGE(TAG, "No se pudo iniciar el radar de presencia.");
     }
 
-    // La cámara va antes que la SD: así lo validó la prueba anterior de la placa
+    // La cámara va antes que la SD: en esta placa el orden inverso falla al iniciar la cámara
     const camara_config_t config_camara = {
         .pin_xclk = PIN_CAM_XCLK,
         .pin_sccb_sda = PIN_CAM_SIOD,
@@ -131,7 +131,7 @@ extern "C" void app_main(void) {
         .pin_vsync = PIN_CAM_VSYNC,
         .pin_href = PIN_CAM_HREF,
         .pin_pclk = PIN_CAM_PCLK,
-        .xclk_hz = 10000000,            // Frecuencia ya probada con esta OV3660
+        .xclk_hz = 10000000,            // Frecuencia estable con esta OV3660
         .resolucion = FRAMESIZE_VGA,    // 640x480: suficiente para el modelo y liviano en la SD
         .calidad_jpeg = 12,
     };
@@ -165,6 +165,7 @@ extern "C" void app_main(void) {
 
     const valvula_config_t config_valvula = {
         .pin_pulso = PIN_VALVULA_PULSO,
+        .activo_en_bajo = VALVULA_ACTIVA_EN_BAJO,
         .duracion_pulso_ms = DURACION_PULSO_VALVULA_MS,
         .pin_posicion = PIN_VALVULA_POSICION,
         .nivel_cerrada = 0,
@@ -196,12 +197,7 @@ extern "C" void app_main(void) {
                      radar.objetivo, radar.distancia_movimiento_cm, radar.energia_movimiento,
                      radar.distancia_estatico_cm, radar.energia_estatico, ld2410_leer_salida());
         } else {
-            ld2410_diagnostico_t diagnostico;
-            ld2410_obtener_diagnostico(&diagnostico);
-            ESP_LOGW(TAG, "Radar: sin tramas por UART | OUT=%d | bytes %" PRIu32 ", cabeceras %" PRIu32
-                     ", tramas %" PRIu32 ", desbordes %" PRIu32 ", cortes %" PRIu32 " | últimos: %s",
-                     ld2410_leer_salida(), diagnostico.bytes_recibidos, diagnostico.cabeceras,
-                     diagnostico.tramas_validas, diagnostico.desbordes, diagnostico.cortes, diagnostico.muestra_hex);
+            ESP_LOGW(TAG, "Radar: sin datos por UART (revisa 5 V, GND y TX/RX) | OUT=%d", ld2410_leer_salida());
         }
         if (!monitor_temperatura_obtener_ultima_muestra(&muestra)) {
             if (!monitor_temperatura_sensor_ok()) {

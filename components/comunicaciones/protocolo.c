@@ -42,6 +42,46 @@ static double redondear(double valor, int decimales)
     return round(valor * factor) / factor;
 }
 
+static const char *nombre_resultado_calibracion(resultado_calibracion_estufa_t resultado)
+{
+    switch (resultado) {
+    case CAL_RESULTADO_OK:              return "ok";
+    case CAL_RESULTADO_SIN_CALOR:       return "sin_calor";
+    case CAL_RESULTADO_CANCELADA:       return "cancelada";
+    case CAL_RESULTADO_ERROR_SENSOR:    return "error_sensor";
+    case CAL_RESULTADO_NINGUNO:         break;
+    }
+    return NULL;
+}
+
+// Umbral de "estufa encendida" y progreso de la calibración con la parrilla al mínimo
+static void datos_estufa(cJSON *datos)
+{
+    cJSON *estufa = cJSON_AddObjectToObject(datos, "estufa");
+    bool calibrado = false;
+    cJSON_AddNumberToObject(estufa, "umbral_incremento", redondear(monitor_temperatura_obtener_umbral_incremento(&calibrado), 1));
+    cJSON_AddBoolToObject(estufa, "calibrado", calibrado);
+
+    calibracion_estufa_t cal;
+    maquina_estados_obtener_calibracion_estufa(&cal);
+    if (cal.paso == CAL_ESTUFA_INACTIVA) {
+        cJSON_AddNullToObject(estufa, "calibracion");
+    } else {
+        cJSON *progreso = cJSON_AddObjectToObject(estufa, "calibracion");
+        cJSON_AddStringToObject(progreso, "paso", cal.paso == CAL_ESTUFA_REFERENCIA ? "referencia" : "midiendo");
+        cJSON_AddNumberToObject(progreso, "segundos_restantes", cal.segundos_restantes);
+        cJSON_AddNumberToObject(progreso, "referencia", redondear(cal.referencia_c, 1));
+        cJSON_AddNumberToObject(progreso, "incremento", redondear(cal.incremento_c, 1));
+    }
+
+    const char *resultado = nombre_resultado_calibracion(cal.resultado);
+    if (!resultado) {
+        cJSON_AddNullToObject(estufa, "ultimo_resultado");
+    } else {
+        cJSON_AddStringToObject(estufa, "ultimo_resultado", resultado);
+    }
+}
+
 static cJSON *datos_estado(void)
 {
     cJSON *datos = cJSON_CreateObject();
@@ -65,6 +105,8 @@ static cJSON *datos_estado(void)
     } else {
         cJSON_AddNullToObject(temperatura, "linea_base");
     }
+
+    datos_estufa(datos);
 
     cJSON *presencia = cJSON_AddObjectToObject(datos, "presencia");
     ld2410_lectura_t radar;
@@ -425,6 +467,15 @@ char *protocolo_procesar(const char *mensaje, transporte_t transporte, imagen_pe
         respuesta = comando_horario_guardar(raiz, id);
     } else if (strcmp(cmd, "horario_borrar") == 0) {
         respuesta = comando_horario_borrar(raiz, id);
+    } else if (strcmp(cmd, "calibrar_estufa") == 0) {
+        if (maquina_estados_calibrar_estufa() == ESP_OK) {
+            respuesta = crear_respuesta(cmd, id, true);
+            cJSON_AddStringToObject(respuesta, "mensaje",
+                                    "Deja la estufa apagada 10 s; cuando el paso sea 'midiendo', enciende una parrilla al minimo");
+        } else {
+            respuesta = crear_error(cmd, id, "no_disponible",
+                                    "Solo se calibra en MONITOREO, con la estufa apagada y sin anomalias");
+        }
     } else if (strcmp(cmd, "vivo") == 0) {
         respuesta = comando_vivo(id, transporte);
     } else if (strcmp(cmd, "cambiar_clave") == 0) {

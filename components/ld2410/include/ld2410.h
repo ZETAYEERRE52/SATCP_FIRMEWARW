@@ -49,28 +49,6 @@ esp_err_t ld2410_iniciar(const ld2410_config_t *config);
 bool ld2410_obtener_lectura(ld2410_lectura_t *lectura);
 
 /**
- * Diagnóstico: bytes crudos recibidos por la UART y tramas decodificadas desde el arranque.
- * Bytes sin tramas = velocidad incorrecta; ningún byte = cableado o alimentación.
- */
-void ld2410_obtener_contadores(uint32_t *bytes_recibidos, uint32_t *tramas_validas);
-
-#define LD2410_TAM_MUESTRA  16
-
-typedef struct {
-    uint32_t bytes_recibidos;
-    uint32_t cabeceras;         // Inicios de trama F4 F3 F2 F1 encontrados
-    uint32_t tramas_validas;
-    uint32_t desbordes;         // Datos perdidos porque el firmware no los leyó a tiempo
-    uint32_t cortes;            // La línea RX se quedó en bajo más de un carácter
-    char muestra_hex[3 * LD2410_TAM_MUESTRA + 1];   // Últimos bytes recibidos
-} ld2410_diagnostico_t;
-
-/**
- * Diagnóstico detallado de la UART, para cuando el radar no entrega tramas válidas.
- */
-void ld2410_obtener_diagnostico(ld2410_diagnostico_t *diagnostico);
-
-/**
  * Nivel del pin OUT (1 = presencia). Devuelve -1 si no está configurado.
  */
 int ld2410_leer_salida(void);

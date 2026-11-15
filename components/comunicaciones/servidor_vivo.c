@@ -21,7 +21,6 @@ static const char *TAG = "VIVO";
 #define TAM_MAX_CUADRO          (160 * 1024)    // Un JPEG VGA de calidad 12 ronda los 40 KB
 #define SEPARADOR               "satcpcuadro"
 #define CTRL_PORT_VIVO          (ESP_HTTPD_DEF_CTRL_PORT + 1)   // Cada servidor necesita su propio puerto de control
-#define PERIODO_DIAGNOSTICO_US  (5 * 1000000LL)  // Resumen de tiempos del video en el log
 #define TIEMPO_ESPERA_ENVIO_S   15      // Con señal débil un cuadro puede tardar; 5 s (por defecto) cortaba el video
 
 static httpd_handle_t s_servidor;
@@ -61,17 +60,10 @@ static esp_err_t transmitir_vivo(httpd_req_t *req)
     uint32_t enviados = 0;
     uint64_t bytes_enviados = 0;
     esp_err_t ret = ESP_OK;
-    // Diagnóstico del retraso: si domina la captura, el límite es la cámara; si domina el envío, la red o la app
-    int64_t captura_us = 0;
-    int64_t envio_us = 0;
-    int64_t envio_max_us = 0;
-    uint32_t cuadros_tramo = 0;
-    int64_t inicio_tramo = inicio;
 
     while (ret == ESP_OK && esp_timer_get_time() - inicio < DURACION_MAXIMA_US) {
         // La cámara se suelta en cuanto se copia el cuadro: la fase visual tiene más prioridad
         // que esta tarea y toma sus fotos entre un cuadro y otro aunque haya alguien mirando
-        const int64_t antes_captura = esp_timer_get_time();
         camera_fb_t *cuadro = camara_capturar(pdMS_TO_TICKS(ESPERA_CAMARA_MS));
         if (!cuadro) {
             vTaskDelay(pdMS_TO_TICKS(PERIODO_CUADRO_MS));
@@ -85,9 +77,6 @@ static esp_err_t transmitir_vivo(httpd_req_t *req)
         if (largo == 0) {
             continue;
         }
-        const int64_t antes_envio = esp_timer_get_time();
-        captura_us += antes_envio - antes_captura;
-
         char cabecera[96];
         const int largo_cabecera = snprintf(cabecera, sizeof(cabecera),
                                             "\r\n--" SEPARADOR "\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
@@ -99,22 +88,6 @@ static esp_err_t transmitir_vivo(httpd_req_t *req)
         if (ret == ESP_OK) {
             enviados++;
             bytes_enviados += largo;
-        }
-        const int64_t duracion_envio = esp_timer_get_time() - antes_envio;
-        envio_us += duracion_envio;
-        envio_max_us = duracion_envio > envio_max_us ? duracion_envio : envio_max_us;
-        cuadros_tramo++;
-
-        const int64_t ahora = esp_timer_get_time();
-        if (ahora - inicio_tramo >= PERIODO_DIAGNOSTICO_US) {
-            ESP_LOGI(TAG, "Últimos %lld s: %.1f cuadros/s | captura %lld ms | envío %lld ms (máx. %lld ms)",
-                     (ahora - inicio_tramo) / 1000000, cuadros_tramo * 1e6f / (float)(ahora - inicio_tramo),
-                     captura_us / cuadros_tramo / 1000, envio_us / cuadros_tramo / 1000, envio_max_us / 1000);
-            captura_us = 0;
-            envio_us = 0;
-            envio_max_us = 0;
-            cuadros_tramo = 0;
-            inicio_tramo = ahora;
         }
         // Tras un envío lento, DelayUntil "recuperaría" los cuadros atrasados enviándolos seguidos
         // (ráfagas de ~17 cuadros/s): si ya pasó el periodo, se reinicia el ritmo desde ahora

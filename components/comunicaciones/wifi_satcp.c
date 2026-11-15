@@ -28,6 +28,10 @@ static const char *TAG = "WIFI";
 // 0: la estación no duerme (menos retraso; el equipo va enchufado). Si el Bluetooth se vuelve
 // inestable por compartir la radio, poner 1 para volver al modo de ahorro por defecto
 #define AHORRO_ENERGIA_WIFI     0
+// Potencia máxima de transmisión (máx. del ESP32-S3: 20 dBm). Al transmitir, la radio pide picos de
+// ~300 mA: con una fuente justa el voltaje cae, el router no entiende la trama y no contesta (motivo 2)
+// aunque la señal recibida sea buena. Con el router en la misma casa 15 dBm sobra
+#define POTENCIA_TX_DBM         15
 
 static struct {
     bool tiene_red;
@@ -46,7 +50,7 @@ static struct {
 static const char *describir_motivo(uint8_t motivo)
 {
     switch (motivo) {
-    case WIFI_REASON_AUTH_EXPIRE:               return "la red no respondió a la autenticación";
+    case WIFI_REASON_AUTH_EXPIRE:               return "la red no respondió a la autenticación: router en WPA3, filtro MAC o bloqueo por intentos";
     case WIFI_REASON_AUTH_LEAVE:                return "la red cerró la sesión";
     case WIFI_REASON_DISASSOC_DUE_TO_INACTIVITY: return "desconectado por inactividad";
     case WIFI_REASON_ASSOC_TOOMANY:             return "la red tiene demasiados equipos conectados";
@@ -137,8 +141,7 @@ static void manejar_evento(void *arg, esp_event_base_t base, int32_t id, void *d
                 conectar();
             } else if (!esp_timer_is_active(s_wifi.temporizador)) {
                 ESP_LOGW(TAG, "No se pudo conectar a la red de la casa; reintento en 60 s");
-                esp_timer_start_once(s_wifi.temporizador, ESPERA_REINTENTO_US);
-            }
+                esp_timer_start_once(s_wifi.temporizador, ESPERA_REINTENTO_US);            }
             break;
         }
         case WIFI_EVENT_AP_STACONNECTED:
@@ -171,6 +174,15 @@ static void manejar_evento(void *arg, esp_event_base_t base, int32_t id, void *d
     }
 }
 
+// Red de la casa en WPA2 (una clave vacía es red abierta)
+static void completar_config_sta(wifi_config_t *config)
+{
+    // Busca en todos los canales y elige el punto de acceso con mejor señal (repetidores con el mismo nombre)
+    config->sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    config->sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    config->sta.threshold.authmode = config->sta.password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+}
+
 static bool cargar_red(wifi_config_t *config)
 {
     nvs_handle_t nvs;
@@ -182,6 +194,7 @@ static bool cargar_red(wifi_config_t *config)
     const bool ok = nvs_get_str(nvs, NVS_CLAVE_SSID, (char *)config->sta.ssid, &tam_ssid) == ESP_OK &&
                     nvs_get_str(nvs, NVS_CLAVE_CLAVE, (char *)config->sta.password, &tam_clave) == ESP_OK;
     nvs_close(nvs);
+    completar_config_sta(config);
     return ok && config->sta.ssid[0] != '\0';
 }
 
@@ -240,6 +253,9 @@ esp_err_t wifi_satcp_iniciar(void)
         ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &config_sta), TAG, "config estación");
     }
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start");
+    // Unidades de 0.25 dBm
+    const esp_err_t ret_tx = esp_wifi_set_max_tx_power(POTENCIA_TX_DBM * 4);
+    ESP_LOGI(TAG, "Potencia de transmisión: %d dBm (%s)", POTENCIA_TX_DBM, esp_err_to_name(ret_tx));
 #if !AHORRO_ENERGIA_WIFI
     // Sin ahorro la estación no duerme entre balizas: las respuestas no esperan ~100 ms en el router
     const esp_err_t ret_ps = esp_wifi_set_ps(WIFI_PS_NONE);
@@ -273,6 +289,7 @@ esp_err_t wifi_satcp_configurar_red(const char *ssid, const char *clave)
                         ESP_ERR_INVALID_SIZE, TAG, "nombre o clave demasiado largos");
     strlcpy((char *)config_sta.sta.ssid, ssid, sizeof(config_sta.sta.ssid));
     strlcpy((char *)config_sta.sta.password, clave, sizeof(config_sta.sta.password));
+    completar_config_sta(&config_sta);
 
     nvs_handle_t nvs;
     ESP_RETURN_ON_ERROR(nvs_open(NVS_ESPACIO, NVS_READWRITE, &nvs), TAG, "NVS");

@@ -7,7 +7,7 @@
 #include "comunicaciones_interno.h"
 
 // Protocolo descrito en docs/PROTOCOLO_APP.md: subir la versión al cambiar el formato de los mensajes
-#define SATCP_VERSION_FIRMWARE      "2.0.0"
+#define SATCP_VERSION_FIRMWARE      "2.1.0"     // 2.1: calibración con la estufa (calibrar_estufa)
 #define SATCP_VERSION_PROTOCOLO     2     // 2: mensajes cifrados (sesión con "hola")
 
 typedef struct {

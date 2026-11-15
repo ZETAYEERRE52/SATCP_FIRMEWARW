@@ -10,9 +10,8 @@ extern "C" {
 #endif
 
 /**
- * Acciones que la máquina de estados delega en el hardware. Por ahora están simuladas
- * en acciones_simuladas.c; cada etapa real (sensor de presencia, visión, Wi-Fi/BLE,
- * válvula) reemplaza su función sin tocar la máquina de estados.
+ * Acciones que la máquina de estados delega en el hardware: presencia (acciones_presencia.c),
+ * visión (acciones_vision.c) y alerta, cierre de la válvula y reporte (acciones_cierre.c).
  */
 
 typedef enum {

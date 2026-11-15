@@ -18,6 +18,19 @@ static const char *TAG = "MAQUINA_ESTADOS";
 #define BIT_RESPUESTA_USUARIO       BIT0
 #define BIT_REARMAR                 BIT1
 #define BIT_CIERRE_MANUAL           BIT2
+#define BIT_CALIBRAR_ESTUFA         BIT3
+
+// Calibración con la estufa: de la subida medida con una parrilla al mínimo se toma el 80 %, para
+// detectar una parrilla encendida antes de que alcance toda su subida
+#define CAL_REFERENCIA_S            10
+#define CAL_MEDICION_MAX_S          180
+#define CAL_MEDICION_MIN_S          60
+#define CAL_ESTABLE_S               30      // Sin subir en este tiempo, la parrilla ya llegó a su máximo
+#define CAL_PASO_SUBIDA_C           0.2f    // Subida mínima que cuenta como "sigue subiendo"
+#define CAL_SUBIDA_MINIMA_C         1.0f
+#define CAL_FACTOR_UMBRAL           0.8f
+#define CAL_UMBRAL_MIN_C            2.0f    // Por debajo, el ruido del sensor daría falsas alarmas
+#define CAL_UMBRAL_MAX_C            20.0f
 #define TAM_PILA_TAREA              6144
 #define US_POR_S                    1000000LL
 #define AVISO_ESPERA_CADA_S         30
@@ -35,8 +48,9 @@ static struct {
     int64_t marca_ultima_validacion_us;
     int64_t silencio_hasta_us;
     alerta_t alerta;                    // Alerta en curso (también va en el reporte de cierre)
-    portMUX_TYPE cerrojo_alerta;        // La alerta se lee desde las tareas de Wi-Fi y BLE
+    portMUX_TYPE cerrojo_alerta;        // La alerta y la calibración se leen desde las tareas de Wi-Fi y BLE
     volatile uint32_t segundos_para_cierre;
+    calibracion_estufa_t calibracion_estufa;
 
     bool estabilidad_iniciada;
     int64_t inicio_estabilidad_us;
@@ -56,6 +70,7 @@ const char *maquina_estados_nombre(estado_sistema_t estado)
     case ESTADO_SISTEMA_CIERRE_AUTOMATICO:  return "CIERRE_AUTOMATICO";
     case ESTADO_SISTEMA_BLOQUEADO:          return "BLOQUEADO";
     case ESTADO_SISTEMA_AUTOCALIBRACION:    return "AUTOCALIBRACION";
+    case ESTADO_SISTEMA_CALIBRACION_ESTUFA: return "CALIBRACION_ESTUFA";
     }
     return "DESCONOCIDO";
 }
@@ -183,6 +198,13 @@ static void ejecutar_monitoreo(void)
     if (horarios_toca_cierre(&horario)) {
         ESP_LOGW(TAG, "Horario programado %d: cerrando el suministro", horario);
         preparar_cierre_directo(ORIGEN_HORARIO);
+        return;
+    }
+
+    // Si mientras tanto llegó una anomalía, la referencia ya no sería con la estufa apagada: se descarta
+    const bool calibrar = xEventGroupClearBits(s_maquina.eventos, BIT_CALIBRAR_ESTUFA) & BIT_CALIBRAR_ESTUFA;
+    if (calibrar && !s_maquina.anomalia_activa) {
+        cambiar_estado(ESTADO_SISTEMA_CALIBRACION_ESTUFA);
         return;
     }
 
@@ -317,8 +339,8 @@ static void ejecutar_cierre_automatico(void)
         ESP_LOGE(TAG, "No se pudo enviar el reporte de cierre (%s)", esp_err_to_name(ret));
     }
 
-    // Un "cerrar" que llegó durante el cierre ya quedó cumplido
-    xEventGroupClearBits(s_maquina.eventos, BIT_REARMAR | BIT_CIERRE_MANUAL);
+    // Un "cerrar" que llegó durante el cierre ya quedó cumplido, y una calibración pendiente ya no aplica
+    xEventGroupClearBits(s_maquina.eventos, BIT_REARMAR | BIT_CIERRE_MANUAL | BIT_CALIBRAR_ESTUFA);
     cambiar_estado(ESTADO_SISTEMA_BLOQUEADO);
 }
 
@@ -365,6 +387,120 @@ static void ejecutar_autocalibracion(void)
     }
 }
 
+static void actualizar_calibracion_estufa(paso_calibracion_estufa_t paso, uint32_t segundos_restantes,
+                                          float referencia_c, float incremento_c)
+{
+    taskENTER_CRITICAL(&s_maquina.cerrojo_alerta);
+    s_maquina.calibracion_estufa.paso = paso;
+    s_maquina.calibracion_estufa.segundos_restantes = segundos_restantes;
+    s_maquina.calibracion_estufa.referencia_c = referencia_c;
+    s_maquina.calibracion_estufa.incremento_c = incremento_c;
+    taskEXIT_CRITICAL(&s_maquina.cerrojo_alerta);
+}
+
+static void terminar_calibracion_estufa(resultado_calibracion_estufa_t resultado, float umbral_c)
+{
+    taskENTER_CRITICAL(&s_maquina.cerrojo_alerta);
+    s_maquina.calibracion_estufa.paso = CAL_ESTUFA_INACTIVA;
+    s_maquina.calibracion_estufa.segundos_restantes = 0;
+    s_maquina.calibracion_estufa.resultado = resultado;
+    if (resultado == CAL_RESULTADO_OK) {
+        s_maquina.calibracion_estufa.umbral_c = umbral_c;
+    }
+    taskEXIT_CRITICAL(&s_maquina.cerrojo_alerta);
+
+    // La subida de la parrilla era esperada: no se revisa como anomalía. Una crítica sí sigue pendiente
+    if (s_maquina.ultimo_evento.tipo != EVENTO_TEMPERATURA_CRITICA) {
+        s_maquina.anomalia_nueva = false;
+    }
+    reiniciar_estabilidad();
+    cambiar_estado(ESTADO_SISTEMA_MONITOREO);
+}
+
+// Espera 1 s atendiendo los eventos. false si hay que abortar: cierre manual (lo atiende la tarea
+// principal) o temperatura crítica (se revisa como siempre)
+static bool esperar_segundo_calibracion(void)
+{
+    const EventBits_t bits = xEventGroupWaitBits(s_maquina.eventos, BIT_CIERRE_MANUAL, pdFALSE, pdFALSE,
+                                                 pdMS_TO_TICKS(1000));
+    atender_eventos(0);
+    const bool critica = s_maquina.anomalia_nueva && s_maquina.ultimo_evento.tipo == EVENTO_TEMPERATURA_CRITICA;
+    return !(bits & BIT_CIERRE_MANUAL) && !critica;
+}
+
+// El usuario enciende una parrilla al mínimo: la subida que provoca es la referencia de "estufa encendida"
+static void ejecutar_calibracion_estufa(void)
+{
+    ESP_LOGW(TAG, "CALIBRACIÓN DE LA ESTUFA, paso 1: con la estufa apagada, midiendo la referencia (%d s)",
+             CAL_REFERENCIA_S);
+    float suma_c = 0.0f;
+    int lecturas = 0;
+    for (int s = 0; s < CAL_REFERENCIA_S; s++) {
+        actualizar_calibracion_estufa(CAL_ESTUFA_REFERENCIA, CAL_REFERENCIA_S - s, NAN, 0.0f);
+        if (!esperar_segundo_calibracion()) {
+            terminar_calibracion_estufa(CAL_RESULTADO_CANCELADA, 0.0f);
+            return;
+        }
+        float medida_c;
+        if (monitor_temperatura_obtener_medida(&medida_c)) {
+            suma_c += medida_c;
+            lecturas++;
+        }
+    }
+    if (lecturas < CAL_REFERENCIA_S / 2) {
+        ESP_LOGE(TAG, "Calibración de la estufa: el sensor no entrega lecturas");
+        terminar_calibracion_estufa(CAL_RESULTADO_ERROR_SENSOR, 0.0f);
+        return;
+    }
+    const float referencia_c = suma_c / (float)lecturas;
+
+    ESP_LOGW(TAG, "Paso 2: referencia %.1f °C. ENCIENDE UNA PARRILLA AL MÍNIMO (midiendo hasta %d s)",
+             referencia_c, CAL_MEDICION_MAX_S);
+    float maximo_c = referencia_c;
+    float ultimo_maximo_c = referencia_c;
+    int segundo_ultima_subida = 0;
+    int s = 1;
+    for (; s <= CAL_MEDICION_MAX_S; s++) {
+        actualizar_calibracion_estufa(CAL_ESTUFA_MIDIENDO, CAL_MEDICION_MAX_S - s + 1, referencia_c,
+                                      maximo_c - referencia_c);
+        if (!esperar_segundo_calibracion()) {
+            terminar_calibracion_estufa(CAL_RESULTADO_CANCELADA, 0.0f);
+            return;
+        }
+        float medida_c;
+        if (!monitor_temperatura_obtener_medida(&medida_c)) {
+            continue;
+        }
+        maximo_c = fmaxf(maximo_c, medida_c);
+        if (maximo_c - ultimo_maximo_c >= CAL_PASO_SUBIDA_C) {
+            ultimo_maximo_c = maximo_c;
+            segundo_ultima_subida = s;
+        }
+        // Termina antes si la parrilla ya llegó a su subida máxima
+        if (s >= CAL_MEDICION_MIN_S && maximo_c - referencia_c >= CAL_SUBIDA_MINIMA_C &&
+            s - segundo_ultima_subida >= CAL_ESTABLE_S) {
+            break;
+        }
+    }
+
+    const float subida_c = maximo_c - referencia_c;
+    if (subida_c < CAL_SUBIDA_MINIMA_C) {
+        ESP_LOGE(TAG, "Calibración de la estufa: solo subió %.1f °C. ¿Parrilla encendida y dentro de la vista del sensor?",
+                 subida_c);
+        terminar_calibracion_estufa(CAL_RESULTADO_SIN_CALOR, 0.0f);
+        return;
+    }
+    const float umbral_c = fminf(fmaxf(subida_c * CAL_FACTOR_UMBRAL, CAL_UMBRAL_MIN_C), CAL_UMBRAL_MAX_C);
+    if (monitor_temperatura_establecer_umbral_incremento(umbral_c) != ESP_OK) {
+        terminar_calibracion_estufa(CAL_RESULTADO_ERROR_SENSOR, 0.0f);
+        return;
+    }
+    ESP_LOGW(TAG, "Calibración de la estufa lista en %d s: la parrilla al mínimo sube %.1f °C; "
+             "desde ahora un incremento de %.1f °C es posible riesgo. Ya puedes apagarla",
+             s, subida_c, umbral_c);
+    terminar_calibracion_estufa(CAL_RESULTADO_OK, umbral_c);
+}
+
 static void tarea_maquina_estados(void *arg)
 {
     for (;;) {
@@ -382,6 +518,7 @@ static void tarea_maquina_estados(void *arg)
         case ESTADO_SISTEMA_CIERRE_AUTOMATICO:  ejecutar_cierre_automatico(); break;
         case ESTADO_SISTEMA_BLOQUEADO:          ejecutar_bloqueado(); break;
         case ESTADO_SISTEMA_AUTOCALIBRACION:    ejecutar_autocalibracion(); break;
+        case ESTADO_SISTEMA_CALIBRACION_ESTUFA: ejecutar_calibracion_estufa(); break;
         }
     }
 }
@@ -447,6 +584,24 @@ esp_err_t maquina_estados_cerrar_manual(void)
         xEventGroupSetBits(s_maquina.eventos, BIT_CIERRE_MANUAL);
     }
     return ESP_OK;
+}
+
+esp_err_t maquina_estados_calibrar_estufa(void)
+{
+    ESP_RETURN_ON_FALSE(s_maquina.eventos, ESP_ERR_INVALID_STATE, TAG, "la máquina no está iniciada");
+    // La referencia necesita la estufa apagada y sin una anomalía en curso
+    if (s_maquina.estado != ESTADO_SISTEMA_MONITOREO || s_maquina.anomalia_activa) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xEventGroupSetBits(s_maquina.eventos, BIT_CALIBRAR_ESTUFA);
+    return ESP_OK;
+}
+
+void maquina_estados_obtener_calibracion_estufa(calibracion_estufa_t *calibracion)
+{
+    taskENTER_CRITICAL(&s_maquina.cerrojo_alerta);
+    *calibracion = s_maquina.calibracion_estufa;
+    taskEXIT_CRITICAL(&s_maquina.cerrojo_alerta);
 }
 
 estado_sistema_t maquina_estados_obtener_estado(void)

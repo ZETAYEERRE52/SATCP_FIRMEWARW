@@ -18,7 +18,31 @@ typedef enum {
     ESTADO_SISTEMA_CIERRE_AUTOMATICO,   // Fase 4: cierre y reporte
     ESTADO_SISTEMA_BLOQUEADO,           // Tras el cierre: requiere rearme manual
     ESTADO_SISTEMA_AUTOCALIBRACION,     // Temperatura estable: verificar y registrar línea base
+    ESTADO_SISTEMA_CALIBRACION_ESTUFA,  // El usuario enciende una parrilla al mínimo: se mide su incremento
 } estado_sistema_t;
+
+typedef enum {
+    CAL_ESTUFA_INACTIVA,
+    CAL_ESTUFA_REFERENCIA,              // Estufa apagada: se mide la temperatura de partida
+    CAL_ESTUFA_MIDIENDO,                // El usuario ya debe haber encendido la parrilla al mínimo
+} paso_calibracion_estufa_t;
+
+typedef enum {
+    CAL_RESULTADO_NINGUNO,
+    CAL_RESULTADO_OK,
+    CAL_RESULTADO_SIN_CALOR,            // No subió lo suficiente: parrilla apagada o el sensor no la ve
+    CAL_RESULTADO_CANCELADA,            // Cierre manual o temperatura crítica durante la calibración
+    CAL_RESULTADO_ERROR_SENSOR,
+} resultado_calibracion_estufa_t;
+
+typedef struct {
+    paso_calibracion_estufa_t paso;
+    uint32_t segundos_restantes;        // Del paso en curso (el de medición puede terminar antes)
+    float referencia_c;                 // Lectura con la estufa apagada
+    float incremento_c;                 // Subida máxima medida hasta ahora
+    resultado_calibracion_estufa_t resultado;   // De la última calibración terminada
+    float umbral_c;                     // Umbral aplicado por la última calibración correcta
+} calibracion_estufa_t;
 
 typedef struct {
     uint32_t confirmacion_presencia_ms;     // Si el radar ve a alguien, tiempo para confirmarlo (> retención de 5 s)
@@ -69,6 +93,15 @@ esp_err_t maquina_estados_rearmar(void);
  * Devuelve ESP_ERR_INVALID_STATE si ya está BLOQUEADO.
  */
 esp_err_t maquina_estados_cerrar_manual(void);
+
+/**
+ * Calibración con la estufa: 10 s de referencia con la estufa apagada y hasta 3 min con una parrilla
+ * al mínimo. El 80 % de la subida medida pasa a ser el umbral de incremento (ver monitor_temperatura).
+ * Solo en MONITOREO y sin anomalía activa; si no, ESP_ERR_INVALID_STATE.
+ */
+esp_err_t maquina_estados_calibrar_estufa(void);
+
+void maquina_estados_obtener_calibracion_estufa(calibracion_estufa_t *calibracion);
 
 estado_sistema_t maquina_estados_obtener_estado(void);
 

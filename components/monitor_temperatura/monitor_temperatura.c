@@ -11,9 +11,15 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "monitor_temperatura.h"
 
 static const char *TAG = "MONITOR_TEMP";
+
+#define NVS_ESPACIO_UMBRAL          "satcp"
+#define NVS_CLAVE_UMBRAL            "umbral_inc"    // Umbral de incremento medido con la parrilla al mínimo
+#define UMBRAL_INCREMENTO_MIN_C     1.0f
+#define UMBRAL_INCREMENTO_MAX_C     30.0f
 
 #define MUESTRAS_POR_SEGUNDO        MONITOR_FRECUENCIA_HZ
 #define TAM_COLA_EVENTOS            8
@@ -56,7 +62,35 @@ static struct {
     bool revision_valida;
     float piso_revision_c;
     uint16_t contador_resalto;
+
+    // Umbral de incremento (salto, superación de la línea base y nuevo salto): el de fábrica o el
+    // medido encendiendo una parrilla al mínimo
+    float umbral_incremento_fabrica_c;
+    bool umbral_incremento_calibrado;
 } s_monitor;
+
+static void aplicar_umbral_incremento(float umbral_c)
+{
+    s_monitor.config.umbral_salto_c = umbral_c;
+    s_monitor.config.margen_superacion_c = umbral_c;
+}
+
+static void cargar_umbral_incremento(void)
+{
+    nvs_handle_t nvs;
+    float umbral_c = 0.0f;
+    size_t tam = sizeof(umbral_c);
+    if (nvs_open(NVS_ESPACIO_UMBRAL, NVS_READONLY, &nvs) != ESP_OK) {
+        return;
+    }
+    const bool leido = nvs_get_blob(nvs, NVS_CLAVE_UMBRAL, &umbral_c, &tam) == ESP_OK && tam == sizeof(umbral_c);
+    nvs_close(nvs);
+    if (leido && umbral_c >= UMBRAL_INCREMENTO_MIN_C && umbral_c <= UMBRAL_INCREMENTO_MAX_C) {
+        aplicar_umbral_incremento(umbral_c);
+        s_monitor.umbral_incremento_calibrado = true;
+        ESP_LOGI(TAG, "Umbral de incremento calibrado con la parrilla: %.1f °C", umbral_c);
+    }
+}
 
 // Debe llamarse con el mutex tomado (o antes de crear la tarea)
 static void aplicar_calibracion(const calibracion_temperatura_t *cal)
@@ -269,50 +303,21 @@ static void tarea_monitor_temperatura(void *arg)
     }
 }
 
-// Diagnóstico previo al bus: con las pull-ups internas desactivadas, un módulo GY-906
-// alimentado mantiene SDA y SCL en alto con sus propias resistencias
-static void verificar_lineas_i2c(gpio_num_t pin_sda, gpio_num_t pin_scl)
+// Petición SMBus: SCL en bajo > 1.44 ms saca al MLX90614 del modo PWM si estuviera activo
+static void solicitar_modo_smbus(gpio_num_t pin_sda, gpio_num_t pin_scl)
 {
+    // Los pines 39-42 arrancan con función JTAG: gpio_config los pasa a GPIO
     const gpio_config_t config_entrada = {
         .pin_bit_mask = (1ULL << pin_sda) | (1ULL << pin_scl),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
     };
     gpio_config(&config_entrada);
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    const int nivel_sda = gpio_get_level(pin_sda);
-    const int nivel_scl = gpio_get_level(pin_scl);
-    ESP_LOGI(TAG, "Líneas sin pull-up interna: SDA=%s SCL=%s",
-             nivel_sda ? "ALTO" : "BAJO", nivel_scl ? "ALTO" : "BAJO");
-    if (!nivel_sda || !nivel_scl) {
-        ESP_LOGW(TAG, "Línea en bajo: módulo sin alimentación, cable suelto o en el pin equivocado");
-    }
-
-    // Petición SMBus: SCL en bajo > 1.44 ms saca al MLX90614 del modo PWM si estuviera activo
     gpio_set_level(pin_scl, 0);
     gpio_set_direction(pin_scl, GPIO_MODE_OUTPUT_OD);
     esp_rom_delay_us(2000);
     gpio_set_direction(pin_scl, GPIO_MODE_INPUT);
     gpio_reset_pin(pin_sda);
     gpio_reset_pin(pin_scl);
-}
-
-// Diagnóstico: lista las direcciones que responden en el bus
-static void escanear_bus_i2c(void)
-{
-    int encontrados = 0;
-    ESP_LOGI(TAG, "Escaneando bus I2C (SDA=%d, SCL=%d)...", s_monitor.config.pin_sda, s_monitor.config.pin_scl);
-    for (uint16_t direccion = 0x08; direccion < 0x78; direccion++) {
-        if (i2c_master_probe(s_monitor.bus, direccion, 20) == ESP_OK) {
-            ESP_LOGI(TAG, "  Dispositivo encontrado en 0x%02X", direccion);
-            encontrados++;
-        }
-    }
-    if (encontrados == 0) {
-        ESP_LOGW(TAG, "  Ningún dispositivo responde: revisa alimentación (3V3/GND) y cables SDA/SCL");
-    }
 }
 
 esp_err_t monitor_temperatura_iniciar(const monitor_temperatura_config_t *config)
@@ -329,8 +334,10 @@ esp_err_t monitor_temperatura_iniciar(const monitor_temperatura_config_t *config
                         ESP_ERR_INVALID_ARG, TAG, "los contadores de confirmación deben ser > 0");
 
     s_monitor.config = *config;
+    s_monitor.umbral_incremento_fabrica_c = config->umbral_salto_c;
+    cargar_umbral_incremento();
 
-    verificar_lineas_i2c(config->pin_sda, config->pin_scl);
+    solicitar_modo_smbus(config->pin_sda, config->pin_scl);
 
     esp_err_t ret = ESP_OK;
     const i2c_master_bus_config_t config_bus = {
@@ -353,8 +360,8 @@ esp_err_t monitor_temperatura_iniciar(const monitor_temperatura_config_t *config
     ret = mlx90614_crear(s_monitor.bus, &config_sensor, &s_monitor.sensor);
     const bool sensor_responde = ret == ESP_OK;
     if (ret == ESP_ERR_NOT_FOUND) {
-        ESP_LOGE(TAG, "El MLX90614 no responde: el sistema arranca sin temperatura y seguirá reintentando");
-        escanear_bus_i2c();
+        ESP_LOGE(TAG, "El MLX90614 no responde (revisa 3V3, GND, SDA=%d y SCL=%d): el sistema arranca sin "
+                 "temperatura y seguirá reintentando", config->pin_sda, config->pin_scl);
         ret = ESP_OK;
     }
     ESP_GOTO_ON_ERROR(ret, error, TAG, "no se pudo crear el sensor");
@@ -617,7 +624,64 @@ esp_err_t monitor_temperatura_borrar_calibracion(void)
     const calibracion_temperatura_t vacia = { 0 };
     xSemaphoreTake(s_monitor.mutex, portMAX_DELAY);
     aplicar_calibracion(&vacia);
+    aplicar_umbral_incremento(s_monitor.umbral_incremento_fabrica_c);
+    s_monitor.umbral_incremento_calibrado = false;
     xSemaphoreGive(s_monitor.mutex);
-    ESP_LOGI(TAG, "Calibración borrada: se usa la lectura cruda del sensor");
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_ESPACIO_UMBRAL, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_erase_key(nvs, NVS_CLAVE_UMBRAL);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    ESP_LOGI(TAG, "Calibración borrada: lectura cruda del sensor y umbral de incremento de fábrica (%.1f °C)",
+             s_monitor.umbral_incremento_fabrica_c);
     return calibracion_borrar();
+}
+
+bool monitor_temperatura_obtener_medida(float *temperatura_c)
+{
+    if (!s_monitor.mutex || !temperatura_c) {
+        return false;
+    }
+    float ambiente;
+    int64_t marca;
+    xSemaphoreTake(s_monitor.mutex, portMAX_DELAY);
+    const bool hay_datos = !s_monitor.sensor_en_falla &&
+                           buffer_circular_promediar(&s_monitor.buffer, 0, MUESTRAS_POR_SEGUNDO,
+                                                     temperatura_c, &ambiente, &marca);
+    xSemaphoreGive(s_monitor.mutex);
+    return hay_datos;
+}
+
+esp_err_t monitor_temperatura_establecer_umbral_incremento(float umbral_c)
+{
+    ESP_RETURN_ON_FALSE(s_monitor.mutex, ESP_ERR_INVALID_STATE, TAG, "el monitor no está iniciado");
+    ESP_RETURN_ON_FALSE(umbral_c >= UMBRAL_INCREMENTO_MIN_C && umbral_c <= UMBRAL_INCREMENTO_MAX_C,
+                        ESP_ERR_INVALID_ARG, TAG, "umbral fuera de rango");
+
+    nvs_handle_t nvs;
+    ESP_RETURN_ON_ERROR(nvs_open(NVS_ESPACIO_UMBRAL, NVS_READWRITE, &nvs), TAG, "NVS");
+    esp_err_t ret = nvs_set_blob(nvs, NVS_CLAVE_UMBRAL, &umbral_c, sizeof(umbral_c));
+    if (ret == ESP_OK) {
+        ret = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+    ESP_RETURN_ON_ERROR(ret, TAG, "no se pudo guardar el umbral");
+
+    xSemaphoreTake(s_monitor.mutex, portMAX_DELAY);
+    aplicar_umbral_incremento(umbral_c);
+    s_monitor.umbral_incremento_calibrado = true;
+    xSemaphoreGive(s_monitor.mutex);
+    ESP_LOGI(TAG, "Umbral de incremento: %.1f °C (salto en %u s y superación de la línea base)",
+             umbral_c, s_monitor.config.ventana_salto_s);
+    return ESP_OK;
+}
+
+float monitor_temperatura_obtener_umbral_incremento(bool *calibrado)
+{
+    if (calibrado) {
+        *calibrado = s_monitor.umbral_incremento_calibrado;
+    }
+    return s_monitor.config.umbral_salto_c;
 }

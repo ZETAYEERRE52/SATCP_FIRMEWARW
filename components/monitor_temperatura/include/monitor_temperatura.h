@@ -143,8 +143,27 @@ esp_err_t monitor_temperatura_calibrar_fondo(void);
  */
 esp_err_t monitor_temperatura_calibrar_referencia(float temperatura_referencia_c);
 
+/**
+ * Borra la calibración térmica y vuelve al umbral de incremento de fábrica.
+ */
 esp_err_t monitor_temperatura_borrar_calibracion(void);
 bool monitor_temperatura_obtener_calibracion(calibracion_temperatura_t *cal);
+
+/**
+ * Lectura directa del sensor promediada en el último segundo. false sin lecturas o con el sensor en falla.
+ */
+bool monitor_temperatura_obtener_medida(float *temperatura_c);
+
+/**
+ * Umbral de incremento medido con una parrilla al mínimo: reemplaza a umbral_salto_c y a
+ * margen_superacion_c, y se guarda en NVS (se conserva al reiniciar).
+ */
+esp_err_t monitor_temperatura_establecer_umbral_incremento(float umbral_c);
+
+/**
+ * Umbral de incremento vigente. `calibrado` indica si salió de la calibración con la parrilla.
+ */
+float monitor_temperatura_obtener_umbral_incremento(bool *calibrado);
 
 #ifdef __cplusplus
 }

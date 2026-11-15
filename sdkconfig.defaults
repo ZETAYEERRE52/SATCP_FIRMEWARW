@@ -46,3 +46,7 @@ CONFIG_MDNS_TASK_AFFINITY_CPU1=y
 # Nombres de archivo largos en la SD (carpetas del dataset)
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
+
+# Wi-Fi solo WPA2 (la red de la casa no usa WPA3)
+# CONFIG_ESP_WIFI_ENABLE_WPA3_SAE is not set
+# CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA is not set

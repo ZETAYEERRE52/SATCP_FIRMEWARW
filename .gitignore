@@ -86,5 +86,3 @@ herramientas/
 sdkconfig.respaldo*
 # Rutas de esta computadora (ESP-IDF, Python, puerto COM)
 .vscode/
-# Clase de prueba anterior de la cámara (no la usa el firmware)
-main/camara.h

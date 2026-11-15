@@ -35,12 +35,14 @@
 #define PIN_SD_CLK      GPIO_NUM_39
 #define PIN_SD_D0       GPIO_NUM_40
 
-// Válvula de gas: optoacoplador (p. ej. PC817) sobre el botón de la válvula, que ALTERNA abrir/cerrar.
-// GPIO 48 -> resistencia de 330 Ω -> ánodo del LED; cátodo a GND. Una resistencia de 10 kΩ de GPIO 48
-// a GND evita pulsos al arrancar. El transistor del optoacoplador va en paralelo con el botón.
+// Válvula de gas: módulo de relé (VCC a 5 V del regulador, GND común, IN a GPIO 48). Sus contactos
+// COM y NO van en paralelo con el botón de la válvula, que ALTERNA abrir/cerrar.
+// El módulo se activa con IN en BAJO: en reposo el pin queda en ALTO. No poner resistencia de IN a GND
+// (activaría el relé mientras el ESP32 arranca).
 #define PIN_VALVULA_PULSO       GPIO_NUM_48
+#define VALVULA_ACTIVA_EN_BAJO  true
 #define PIN_VALVULA_POSICION    GPIO_NUM_NC     // Final de carrera opcional (contacto a GND = cerrada)
-#define DURACION_PULSO_VALVULA_MS   500
+#define DURACION_PULSO_VALVULA_MS   1500    // Algunas válvulas solo reaccionan si el botón se mantiene ~1 s
 
 // Botón BOOT de la placa (solo es strapping al arrancar; después se usa como entrada)
 #define PIN_BOTON_CALIBRACION   GPIO_NUM_0

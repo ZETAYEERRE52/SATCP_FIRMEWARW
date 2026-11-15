@@ -42,12 +42,17 @@ static void guardar_supuesta(bool cerrada)
     nvs_close(nvs);
 }
 
+static int nivel_activo(void)
+{
+    return s_valvula.config.activo_en_bajo ? 0 : 1;
+}
+
 static void pulsar_boton(void)
 {
     ESP_LOGW(TAG, "Pulsando el botón de la válvula (%" PRIu32 " ms)", s_valvula.config.duracion_pulso_ms);
-    gpio_set_level(s_valvula.config.pin_pulso, 1);
+    gpio_set_level(s_valvula.config.pin_pulso, nivel_activo());
     vTaskDelay(pdMS_TO_TICKS(s_valvula.config.duracion_pulso_ms));
-    gpio_set_level(s_valvula.config.pin_pulso, 0);
+    gpio_set_level(s_valvula.config.pin_pulso, !nivel_activo());
 }
 
 esp_err_t valvula_iniciar(const valvula_config_t *config)
@@ -55,13 +60,13 @@ esp_err_t valvula_iniciar(const valvula_config_t *config)
     ESP_RETURN_ON_FALSE(config && config->duracion_pulso_ms > 0, ESP_ERR_INVALID_ARG, TAG, "configuración inválida");
     s_valvula.config = *config;
 
-    // Primero el nivel bajo y luego la salida: el optoacoplador no debe parpadear al arrancar
-    gpio_set_level(config->pin_pulso, 0);
+    // Primero el nivel de reposo y luego la salida: el relé no debe pulsar el botón al arrancar
+    gpio_set_level(config->pin_pulso, !nivel_activo());
     const gpio_config_t config_pulso = {
         .pin_bit_mask = 1ULL << config->pin_pulso,
         .mode = GPIO_MODE_OUTPUT,
     };
-    ESP_RETURN_ON_ERROR(gpio_config(&config_pulso), TAG, "pin del optoacoplador");
+    ESP_RETURN_ON_ERROR(gpio_config(&config_pulso), TAG, "pin del relé");
 
     if (hay_sensor()) {
         const gpio_config_t config_posicion = {
@@ -81,8 +86,8 @@ esp_err_t valvula_iniciar(const valvula_config_t *config)
     s_valvula.cerrada_supuesta = cerrada;
     s_valvula.iniciada = true;
 
-    ESP_LOGI(TAG, "Válvula en GPIO %d (pulso %" PRIu32 " ms), %s: %s", config->pin_pulso,
-             config->duracion_pulso_ms, hay_sensor() ? "con sensor de posición" : "sin sensor (estado supuesto)",
+    ESP_LOGI(TAG, "Válvula en GPIO %d (pulso %" PRIu32 " ms, relé activo en %s), %s: %s", config->pin_pulso,
+             config->duracion_pulso_ms, config->activo_en_bajo ? "BAJO" : "ALTO", hay_sensor() ? "con sensor de posición" : "sin sensor (estado supuesto)",
              valvula_cerrada() ? "CERRADA" : "abierta");
     return ESP_OK;
 }

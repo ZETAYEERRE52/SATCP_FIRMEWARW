@@ -183,10 +183,6 @@ extern "C" esp_err_t clasificador_clasificar_jpeg(const uint8_t *jpeg, size_t lo
         }
     }
     xSemaphoreGive(s_mutex);
-    // La llama ocupa una parte pequeña de la imagen de la estufa: basta un poco de "fuego" para contarlo
-    if (resultado->probabilidad[CLASE_FUEGO] >= CLASIFICADOR_UMBRAL_FUEGO) {
-        mejor = CLASE_FUEGO;
-    }
     resultado->clase = static_cast<clase_vision_t>(mejor);
     resultado->tiempo_ms = (uint32_t)((esp_timer_get_time() - inicio) / 1000);
     return ESP_OK;

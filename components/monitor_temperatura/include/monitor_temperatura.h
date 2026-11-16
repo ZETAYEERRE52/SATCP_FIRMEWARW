@@ -27,8 +27,20 @@ typedef enum {
     EVENTO_SENSOR_RECUPERADO,
 } tipo_evento_temperatura_t;
 
+// Qué condición disparó el evento (viaja a la app como alerta.motivo)
+typedef enum {
+    MOTIVO_NINGUNO,
+    MOTIVO_SALTO_BRUSCO,            // La lectura subió umbral_salto_c en ventana_salto_s
+    MOTIVO_SUPERO_LINEA_BASE,       // Superó la línea base por margen_superacion_c (subida lenta)
+    MOTIVO_SUBIDA_SOSTENIDA,        // Tasa por encima de tasa_maxima_c_por_min
+    MOTIVO_CRITICA,
+    MOTIVO_FALLA_SENSOR,
+} motivo_anomalia_t;
+
 typedef struct {
     tipo_evento_temperatura_t tipo;
+    motivo_anomalia_t motivo;
+    float medida_c;                 // Lectura directa del sensor (promedio de 1 s): sobre ella se mide el salto
     float temperatura_c;            // Promedio del último segundo
     float referencia_c;             // Promedio de hace `ventana_tendencia_s` (NAN si no hay datos)
     float tasa_c_por_min;           // Velocidad de subida
@@ -49,6 +61,9 @@ typedef struct {
     float umbral_salto_c;           // Subida brusca de la lectura del sensor que dispara la alerta
     uint16_t ventana_salto_s;       // En cuánto tiempo debe ocurrir esa subida
     uint16_t muestras_confirmacion; // Muestras seguidas en condición anómala antes de alertar
+    // Salto y superación de la línea base: una mano o una olla frente al sensor los provoca un
+    // instante, así que deben sostenerse más (la crítica y la subida sostenida usan el anterior)
+    uint16_t muestras_confirmacion_salto;
     uint16_t muestras_normalizacion;// Muestras seguidas en normalidad antes de declarar normalizado
 
     UBaseType_t prioridad_tarea;
@@ -71,6 +86,7 @@ typedef struct {
     .umbral_salto_c = 4.0f,                                 \
     .ventana_salto_s = 10,                                  \
     .muestras_confirmacion = 5,                             \
+    .muestras_confirmacion_salto = 30,      /* 3 s */       \
     .muestras_normalizacion = 300,                          \
     .prioridad_tarea = 10,                                  \
     .nucleo_tarea = 0,      /* Núcleo del sistema; el 1 es de las comunicaciones */                                      \
@@ -164,6 +180,11 @@ esp_err_t monitor_temperatura_establecer_umbral_incremento(float umbral_c);
  * Umbral de incremento vigente. `calibrado` indica si salió de la calibración con la parrilla.
  */
 float monitor_temperatura_obtener_umbral_incremento(bool *calibrado);
+
+/**
+ * Nombre del motivo tal como viaja en el protocolo (salto_brusco, supero_linea_base, ...).
+ */
+const char *monitor_temperatura_nombre_motivo(motivo_anomalia_t motivo);
 
 #ifdef __cplusplus
 }

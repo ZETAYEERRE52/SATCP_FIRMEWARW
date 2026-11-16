@@ -119,10 +119,13 @@ static bool promediar_estimada(size_t antiguedad, float *temperatura_c, int64_t 
     return true;
 }
 
-static void publicar_evento(tipo_evento_temperatura_t tipo, float temperatura, float referencia, float tasa)
+static void publicar_evento(tipo_evento_temperatura_t tipo, motivo_anomalia_t motivo, float medida,
+                            float temperatura, float referencia, float tasa)
 {
     const evento_temperatura_t evento = {
         .tipo = tipo,
+        .motivo = motivo,
+        .medida_c = medida,
         .temperatura_c = temperatura,
         .referencia_c = referencia,
         .tasa_c_por_min = tasa,
@@ -187,34 +190,40 @@ static void evaluar_anomalia(void)
         s_monitor.piso_revision_c = fminf(s_monitor.piso_revision_c, medida_actual);
     }
 
+    const float medida = hay_medida ? medida_actual : NAN;
     estado_monitor_t condicion = ESTADO_NORMAL;
-    const char *motivo = "";
+    motivo_anomalia_t motivo = MOTIVO_NINGUNO;
     if (t_actual >= cfg->umbral_critico_c) {
         condicion = ESTADO_CRITICO;
+        motivo = MOTIVO_CRITICA;
     } else if (salto >= cfg->umbral_salto_c) {
         condicion = ESTADO_INCREMENTO;
-        motivo = "salto brusco";
+        motivo = MOTIVO_SALTO_BRUSCO;
     } else if (s_monitor.linea_base_valida && t_actual >= s_monitor.linea_base_c + cfg->margen_superacion_c) {
         condicion = ESTADO_INCREMENTO;
-        motivo = "superó la línea base";
+        motivo = MOTIVO_SUPERO_LINEA_BASE;
     } else if (hay_referencia && t_actual >= minimo_para_tasa && tasa >= s_monitor.tasa_umbral_c_por_min) {
         condicion = ESTADO_INCREMENTO;
-        motivo = "subida sostenida";
+        motivo = MOTIVO_SUBIDA_SOSTENIDA;
     }
 
     if (condicion > s_monitor.estado) {
-        // Escalar solo si la condición se sostiene, para ignorar picos aislados
+        // Escalar solo si la condición se sostiene, para ignorar picos aislados. El salto y la superación
+        // de la línea base esperan más: una mano o una olla frente al sensor los provoca un instante
+        const uint16_t necesarias = (motivo == MOTIVO_SALTO_BRUSCO || motivo == MOTIVO_SUPERO_LINEA_BASE)
+                                    ? cfg->muestras_confirmacion_salto : cfg->muestras_confirmacion;
         s_monitor.contador_normalizacion = 0;
-        if (++s_monitor.contador_confirmacion >= cfg->muestras_confirmacion) {
+        if (++s_monitor.contador_confirmacion >= necesarias) {
             s_monitor.contador_confirmacion = 0;
             s_monitor.estado = condicion;
             if (condicion == ESTADO_CRITICO) {
                 ESP_LOGW(TAG, "TEMPERATURA CRÍTICA: %.1f °C", t_actual);
-                publicar_evento(EVENTO_TEMPERATURA_CRITICA, t_actual, t_referencia, tasa);
+                publicar_evento(EVENTO_TEMPERATURA_CRITICA, motivo, medida, t_actual, t_referencia, tasa);
             } else {
-                ESP_LOGW(TAG, "Incremento anómalo (%s): salto %+.1f °C en %u s, estimada %.1f °C, %.1f °C/min",
-                         motivo, salto, cfg->ventana_salto_s, t_actual, tasa);
-                publicar_evento(EVENTO_INCREMENTO_ANOMALO, t_actual, t_referencia, tasa);
+                ESP_LOGW(TAG, "Incremento anómalo (%s): salto %+.1f °C en %u s, medida %.1f °C, estimada %.1f °C, "
+                         "%.1f °C/min", monitor_temperatura_nombre_motivo(motivo), salto, cfg->ventana_salto_s,
+                         medida, t_actual, tasa);
+                publicar_evento(EVENTO_INCREMENTO_ANOMALO, motivo, medida, t_actual, t_referencia, tasa);
             }
         }
     } else if (condicion == ESTADO_NORMAL && s_monitor.estado != ESTADO_NORMAL) {
@@ -224,7 +233,7 @@ static void evaluar_anomalia(void)
             s_monitor.estado = ESTADO_NORMAL;
             s_monitor.revision_valida = false;
             ESP_LOGI(TAG, "Temperatura normalizada: %.1f °C", t_actual);
-            publicar_evento(EVENTO_TEMPERATURA_NORMALIZADA, t_actual, t_referencia, tasa);
+            publicar_evento(EVENTO_TEMPERATURA_NORMALIZADA, MOTIVO_NINGUNO, medida, t_actual, t_referencia, tasa);
         }
     } else {
         s_monitor.contador_confirmacion = 0;
@@ -235,10 +244,10 @@ static void evaluar_anomalia(void)
     // la lectura más baja desde la última revisión para avisar de nuevo si la temperatura sigue subiendo
     if (s_monitor.estado == ESTADO_INCREMENTO && s_monitor.revision_valida && hay_medida &&
         medida_actual - s_monitor.piso_revision_c >= cfg->umbral_salto_c) {
-        if (++s_monitor.contador_resalto >= cfg->muestras_confirmacion) {
+        if (++s_monitor.contador_resalto >= cfg->muestras_confirmacion_salto) {
             ESP_LOGW(TAG, "Nuevo salto tras la revisión: %+.1f °C sobre %.1f °C, estimada %.1f °C",
                      medida_actual - s_monitor.piso_revision_c, s_monitor.piso_revision_c, t_actual);
-            publicar_evento(EVENTO_INCREMENTO_ANOMALO, t_actual, t_referencia, tasa);
+            publicar_evento(EVENTO_INCREMENTO_ANOMALO, MOTIVO_SALTO_BRUSCO, medida, t_actual, t_referencia, tasa);
             s_monitor.piso_revision_c = medida_actual;  // Para el siguiente aviso debe subir otro umbral
             s_monitor.contador_resalto = 0;
         }
@@ -260,7 +269,7 @@ static void manejar_falla_lectura(esp_err_t error)
     if (!s_monitor.sensor_en_falla && s_monitor.fallas_consecutivas >= FALLAS_PARA_ALERTA) {
         s_monitor.sensor_en_falla = true;
         ESP_LOGE(TAG, "Sensor sin respuesta (%s)", esp_err_to_name(error));
-        publicar_evento(EVENTO_FALLA_SENSOR, NAN, NAN, 0.0f);
+        publicar_evento(EVENTO_FALLA_SENSOR, MOTIVO_FALLA_SENSOR, NAN, NAN, NAN, 0.0f);
     }
 }
 
@@ -269,7 +278,7 @@ static void manejar_lectura_correcta(void)
     if (s_monitor.sensor_en_falla) {
         s_monitor.sensor_en_falla = false;
         ESP_LOGI(TAG, "Sensor recuperado tras %" PRIu32 " lecturas fallidas", s_monitor.fallas_consecutivas);
-        publicar_evento(EVENTO_SENSOR_RECUPERADO, NAN, NAN, 0.0f);
+        publicar_evento(EVENTO_SENSOR_RECUPERADO, MOTIVO_NINGUNO, NAN, NAN, NAN, 0.0f);
     }
     s_monitor.fallas_consecutivas = 0;
 }
@@ -330,7 +339,8 @@ esp_err_t monitor_temperatura_iniciar(const monitor_temperatura_config_t *config
     ESP_RETURN_ON_FALSE(config->ventana_salto_s > 0 &&
                         (config->ventana_salto_s + 1) * MUESTRAS_POR_SEGUNDO <= MONITOR_TAM_BUFFER,
                         ESP_ERR_INVALID_ARG, TAG, "ventana_salto_s debe estar entre 1 y %d", MONITOR_VENTANA_S - 1);
-    ESP_RETURN_ON_FALSE(config->muestras_confirmacion > 0 && config->muestras_normalizacion > 0,
+    ESP_RETURN_ON_FALSE(config->muestras_confirmacion > 0 && config->muestras_confirmacion_salto > 0 &&
+                        config->muestras_normalizacion > 0,
                         ESP_ERR_INVALID_ARG, TAG, "los contadores de confirmación deben ser > 0");
 
     s_monitor.config = *config;
@@ -394,7 +404,7 @@ esp_err_t monitor_temperatura_iniciar(const monitor_temperatura_config_t *config
         // La falla se avisa desde el arranque, sin esperar el primer segundo de reintentos
         s_monitor.sensor_en_falla = true;
         s_monitor.fallas_consecutivas = FALLAS_PARA_ALERTA;
-        publicar_evento(EVENTO_FALLA_SENSOR, NAN, NAN, 0.0f);
+        publicar_evento(EVENTO_FALLA_SENSOR, MOTIVO_FALLA_SENSOR, NAN, NAN, NAN, 0.0f);
     }
 
     ESP_GOTO_ON_FALSE(xTaskCreatePinnedToCore(tarea_monitor_temperatura, "monitor_temp", TAM_PILA_TAREA, NULL,
@@ -684,4 +694,17 @@ float monitor_temperatura_obtener_umbral_incremento(bool *calibrado)
         *calibrado = s_monitor.umbral_incremento_calibrado;
     }
     return s_monitor.config.umbral_salto_c;
+}
+
+const char *monitor_temperatura_nombre_motivo(motivo_anomalia_t motivo)
+{
+    switch (motivo) {
+    case MOTIVO_SALTO_BRUSCO:       return "salto_brusco";
+    case MOTIVO_SUPERO_LINEA_BASE:  return "supero_linea_base";
+    case MOTIVO_SUBIDA_SOSTENIDA:   return "subida_sostenida";
+    case MOTIVO_CRITICA:            return "critica";
+    case MOTIVO_FALLA_SENSOR:       return "falla_sensor";
+    case MOTIVO_NINGUNO:            break;
+    }
+    return "ninguno";
 }

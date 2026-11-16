@@ -64,6 +64,12 @@ static esp_err_t transmitir_vivo(httpd_req_t *req)
     while (ret == ESP_OK && esp_timer_get_time() - inicio < DURACION_MAXIMA_US) {
         // La cámara se suelta en cuanto se copia el cuadro: la fase visual tiene más prioridad
         // que esta tarea y toma sus fotos entre un cuadro y otro aunque haya alguien mirando
+        if (camara_prioridad_vision_activa()) {
+            // La vigilancia está analizando: el video se congela unos segundos en lugar de quitarle la cámara
+            vTaskDelay(pdMS_TO_TICKS(PERIODO_CUADRO_MS));
+            ultimo_cuadro = xTaskGetTickCount();
+            continue;
+        }
         camera_fb_t *cuadro = camara_capturar(pdMS_TO_TICKS(ESPERA_CAMARA_MS));
         if (!cuadro) {
             vTaskDelay(pdMS_TO_TICKS(PERIODO_CUADRO_MS));

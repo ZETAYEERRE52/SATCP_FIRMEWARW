@@ -53,6 +53,10 @@ typedef struct {
     uint32_t estabilidad_autocalibracion_s; // Tiempo con temperatura estable para tomarla como línea base
     float banda_estabilidad_c;              // Variación máxima (máx - mín) considerada "misma temperatura"
     float temperatura_maxima_linea_base_c;  // Solo la temperatura ambiente (estufa apagada) es línea base
+    // Días calurosos: hasta esta temperatura también vale como línea base si la subida fue lenta
+    // (sin salto ni subida sostenida activos) y la cámara confirma que no hay riesgo
+    float temperatura_maxima_linea_base_calurosa_c;
+    uint32_t verificaciones_para_alertar;   // Verificaciones automáticas seguidas con fuego/humo antes de alertar
     UBaseType_t prioridad_tarea;
     BaseType_t nucleo_tarea;                // 0: junto a la temperatura y la cámara; el 1 es de las comunicaciones
 } maquina_estados_config_t;
@@ -60,12 +64,14 @@ typedef struct {
 #define MAQUINA_ESTADOS_CONFIG_POR_DEFECTO() {  \
     .confirmacion_presencia_ms = 7000,          \
     .espera_respuesta_s = 120,                  \
-    .intervalo_revalidacion_s = 30,             \
+    .intervalo_revalidacion_s = 120,            \
     .intervalo_minimo_revision_s = 15,          \
     .silencio_tras_cancelacion_s = 300,         \
     .estabilidad_autocalibracion_s = 180,       \
     .banda_estabilidad_c = 1.5f,                \
     .temperatura_maxima_linea_base_c = 24.0f,   \
+    .temperatura_maxima_linea_base_calurosa_c = 30.0f, \
+    .verificaciones_para_alertar = 2,           \
     .prioridad_tarea = 8,                       \
     .nucleo_tarea = 0,                          \
 }
@@ -104,6 +110,13 @@ esp_err_t maquina_estados_calibrar_estufa(void);
 void maquina_estados_obtener_calibracion_estufa(calibracion_estufa_t *calibracion);
 
 estado_sistema_t maquina_estados_obtener_estado(void);
+
+/**
+ * Función a la que se avisa en cada cambio de fase (desde la tarea de la máquina: debe ser breve y no
+ * bloquear). Así las comunicaciones no pierden las fases cortas como VALIDAR_PRESENCIA.
+ */
+typedef void (*aviso_cambio_fase_t)(estado_sistema_t nueva);
+void maquina_estados_registrar_aviso_fase(aviso_cambio_fase_t aviso);
 
 /**
  * Copia la alerta en curso. Devuelve true si hay una alerta vigente (esperando respuesta,

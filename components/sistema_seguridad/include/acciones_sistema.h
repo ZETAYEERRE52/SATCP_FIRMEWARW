@@ -29,11 +29,24 @@ typedef enum {
     ORIGEN_REINICIO,            // Arrancó con la válvula cerrada de antes: sigue bloqueado hasta el rearme
 } origen_alerta_t;
 
+// Cómo votaron los cuadros del último análisis visual (viaja a la app como alerta.vision_detalle)
+typedef struct {
+    bool valido;                        // false si no hubo análisis visual (cierre manual, horario, reinicio)
+    uint8_t votos_fuego;
+    uint8_t votos_humo;
+    uint8_t votos_normal;
+    uint8_t clasificados;
+    float probabilidad_max;             // Mayor probabilidad de fuego o humo vista en algún cuadro
+} detalle_vision_t;
+
 typedef struct {
     origen_alerta_t origen;
     tipo_evento_temperatura_t evento;   // Válido si origen == ORIGEN_ANOMALIA_TEMPERATURA
+    motivo_anomalia_t motivo;           // MOTIVO_NINGUNO fuera de ORIGEN_ANOMALIA_TEMPERATURA
     resultado_vision_t vision;
-    float temperatura_c;
+    detalle_vision_t vision_detalle;
+    float temperatura_c;                // Estimada del recipiente
+    float medida_c;                     // Lectura directa del sensor (sobre ella se mide el salto); NAN si no hay
     float tasa_c_por_min;
     int64_t marca_us;
 } alerta_t;
@@ -50,10 +63,15 @@ typedef struct {
  */
 esp_err_t accion_detectar_presencia(uint32_t confirmacion_ms, bool *hay_presencia);
 
+// Un cuadro cuenta como fuego o humo solo con al menos esta probabilidad; si no, cuenta como normal
+#define VISION_PROBABILIDAD_MINIMA  0.70f
+
 /**
- * Fase 3: captura y clasifica imágenes de la estufa.
+ * Fase 3: captura y clasifica imágenes de la estufa. Decide por mayoría estricta de los cuadros.
+ * Si clasifica menos de 3, repite el análisis una vez; si aun así no llega a 3, devuelve VISION_ERROR.
+ * `detalle` (opcional) recibe los votos.
  */
-resultado_vision_t accion_detectar_fuego_humo(void);
+resultado_vision_t accion_detectar_fuego_humo(detalle_vision_t *detalle);
 
 /**
  * Fase 3: notifica al celular del usuario (Wi-Fi y Bluetooth). La respuesta llega de forma

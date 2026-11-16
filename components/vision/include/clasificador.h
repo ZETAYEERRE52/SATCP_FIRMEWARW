@@ -17,12 +17,8 @@ typedef enum {
     NUM_CLASES,
 } clase_vision_t;
 
-// Probabilidad de fuego a partir de la cual un cuadro cuenta como fuego aunque gane otra clase.
-// La salida int8 del modelo avanza en pasos de 1/256 (0,39 %): 0.01 equivale a 3 pasos
-#define CLASIFICADOR_UMBRAL_FUEGO   0.01f
-
 typedef struct {
-    clase_vision_t clase;               // Fuego si supera CLASIFICADOR_UMBRAL_FUEGO; si no, la de mayor probabilidad
+    clase_vision_t clase;               // La de mayor probabilidad (la vigilancia aplica además VISION_PROBABILIDAD_MINIMA)
     float probabilidad[NUM_CLASES];
     uint32_t tiempo_ms;                 // Decodificación + inferencia
 } resultado_clasificacion_t;

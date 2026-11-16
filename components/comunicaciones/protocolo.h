@@ -5,9 +5,10 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "comunicaciones_interno.h"
+#include "maquina_estados.h"
 
 // Protocolo descrito en docs/PROTOCOLO_APP.md: subir la versión al cambiar el formato de los mensajes
-#define SATCP_VERSION_FIRMWARE      "2.1.0"     // 2.1: calibración con la estufa (calibrar_estufa)
+#define SATCP_VERSION_FIRMWARE      "2.2.0"     // 2.2: alerta.motivo, alerta.medida y alerta.vision_detalle
 #define SATCP_VERSION_PROTOCOLO     2     // 2: mensajes cifrados (sesión con "hola")
 
 typedef struct {
@@ -30,6 +31,12 @@ char *protocolo_procesar(const char *mensaje, transporte_t transporte, imagen_pe
  * Evento de estado JSON (liberar con free()).
  */
 char *protocolo_evento_estado(void);
+
+/**
+ * Evento de estado anunciando la fase `fase` (la de un cambio ya ocurrido; el resto de los datos es el
+ * actual). Liberar con free().
+ */
+char *protocolo_evento_estado_fase(estado_sistema_t fase);
 
 /**
  * Información pública del dispositivo para GET /info: nombre, firmware y protocolo (liberar con free()).

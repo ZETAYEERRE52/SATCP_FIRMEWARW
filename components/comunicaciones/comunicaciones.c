@@ -24,6 +24,7 @@ static const char *TAG = "COMUNICACIONES";
 #define PERIODO_ESTADO_MS       5000    // Latido: la app sabe que la conexión sigue viva
 #define MAX_CLIENTES_WS         4
 #define ESPERA_CAMBIO_CLAVE_MS  1000    // Margen para que la respuesta salga antes de cortar la red SATCP
+#define TAM_COLA_FASES          8       // Cambios de fase pendientes de anunciar a la app
 
 typedef struct {
     transporte_t transporte;
@@ -32,7 +33,29 @@ typedef struct {
 } mensaje_entrante_t;
 
 static QueueHandle_t s_cola;
+static QueueHandle_t s_cola_fases;
 static volatile bool s_forzar_estado;
+
+// Se llama desde la tarea de la máquina de estados en cada cambio de fase. Encolar la fase (y no solo
+// avisar) permite anunciar también las que duran menos que el ciclo de esta tarea
+static void avisar_cambio_fase(estado_sistema_t nueva)
+{
+    if (s_cola_fases && xQueueSend(s_cola_fases, &nueva, 0) != pdTRUE) {
+        // Con la cola llena, al menos el estado actual sale en el siguiente ciclo
+        s_forzar_estado = true;
+    }
+}
+
+static void difundir(const char *mensaje);
+
+static void emitir_estado(estado_sistema_t fase)
+{
+    char *evento = protocolo_evento_estado_fase(fase);
+    if (evento) {
+        difundir(evento);
+        free(evento);
+    }
+}
 
 bool comunicaciones_recibir(const char *mensaje, size_t largo, transporte_t transporte, int fd)
 {
@@ -201,12 +224,11 @@ esp_err_t comunicaciones_restaurar_clave_fabrica(void)
     return ESP_OK;
 }
 
-// Atiende los comandos de ambos transportes en orden y emite el evento de estado:
-// al cambiar de fase, cuando se abre una sesión y como latido cada 5 s
+// Atiende los comandos de ambos transportes en orden y emite el evento de estado: en cada cambio de
+// fase (con la fase de ese momento, aunque ya haya pasado), cuando se abre una sesión y como latido cada 5 s
 static void tarea_comunicaciones(void *arg)
 {
     mensaje_entrante_t entrada;
-    estado_sistema_t fase_previa = maquina_estados_obtener_estado();
     TickType_t ultimo_estado = 0;
 
     for (;;) {
@@ -214,16 +236,20 @@ static void tarea_comunicaciones(void *arg)
             atender_mensaje(&entrada);
         }
 
-        const estado_sistema_t fase = maquina_estados_obtener_estado();
+        bool emitido = false;
+        estado_sistema_t fase;
+        while (xQueueReceive(s_cola_fases, &fase, 0) == pdTRUE) {
+            emitir_estado(fase);
+            emitido = true;
+        }
+
         const TickType_t ahora = xTaskGetTickCount();
-        if (s_forzar_estado || fase != fase_previa || ahora - ultimo_estado >= pdMS_TO_TICKS(PERIODO_ESTADO_MS)) {
+        if (s_forzar_estado || (!emitido && ahora - ultimo_estado >= pdMS_TO_TICKS(PERIODO_ESTADO_MS))) {
             s_forzar_estado = false;
-            char *evento = protocolo_evento_estado();
-            if (evento) {
-                difundir(evento);
-                free(evento);
-            }
-            fase_previa = fase;
+            emitir_estado(maquina_estados_obtener_estado());
+            emitido = true;
+        }
+        if (emitido) {
             ultimo_estado = ahora;
         }
     }
@@ -235,6 +261,9 @@ esp_err_t comunicaciones_iniciar(void)
     ESP_RETURN_ON_ERROR(protocolo_iniciar(), TAG, "protocolo");
     s_cola = xQueueCreate(TAM_COLA, sizeof(mensaje_entrante_t));
     ESP_RETURN_ON_FALSE(s_cola, ESP_ERR_NO_MEM, TAG, "sin memoria para la cola");
+    s_cola_fases = xQueueCreate(TAM_COLA_FASES, sizeof(estado_sistema_t));
+    ESP_RETURN_ON_FALSE(s_cola_fases, ESP_ERR_NO_MEM, TAG, "sin memoria para la cola de fases");
+    maquina_estados_registrar_aviso_fase(avisar_cambio_fase);
 
     // Cada transporte falla por separado: con uno solo la app ya puede operar
     esp_err_t resultado = ESP_OK;

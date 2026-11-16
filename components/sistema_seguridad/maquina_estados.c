@@ -51,6 +51,8 @@ static struct {
     portMUX_TYPE cerrojo_alerta;        // La alerta y la calibración se leen desde las tareas de Wi-Fi y BLE
     volatile uint32_t segundos_para_cierre;
     calibracion_estufa_t calibracion_estufa;
+    aviso_cambio_fase_t aviso_fase;         // Comunicaciones: emite el estado en cada cambio de fase
+    uint32_t verificaciones_con_riesgo;     // Verificaciones automáticas seguidas que vieron fuego o humo
 
     bool estabilidad_iniciada;
     int64_t inicio_estabilidad_us;
@@ -79,6 +81,10 @@ static void cambiar_estado(estado_sistema_t nuevo)
 {
     ESP_LOGI(TAG, "%s -> %s", maquina_estados_nombre(s_maquina.estado), maquina_estados_nombre(nuevo));
     s_maquina.estado = nuevo;
+    const aviso_cambio_fase_t aviso = s_maquina.aviso_fase;
+    if (aviso) {
+        aviso(nuevo);
+    }
 }
 
 static void reiniciar_estabilidad(void)
@@ -116,8 +122,14 @@ static bool temperatura_estable(int64_t ahora_us, float *temperatura_estable_c)
 {
     const maquina_estados_config_t *cfg = &s_maquina.config;
 
+    // Hasta temperatura_maxima_linea_base_c siempre; en días calurosos, hasta la máxima calurosa solo
+    // si la subida fue lenta: sin anomalía, o con la de "superó la línea base" (ambiente que se calentó)
+    const bool subida_lenta = !s_maquina.anomalia_activa ||
+                              s_maquina.ultimo_evento.motivo == MOTIVO_SUPERO_LINEA_BASE;
+    const float maximo_permitido = subida_lenta ? cfg->temperatura_maxima_linea_base_calurosa_c
+                                                : cfg->temperatura_maxima_linea_base_c;
     float t;
-    if (!monitor_temperatura_obtener_estimada(&t) || t > cfg->temperatura_maxima_linea_base_c) {
+    if (!monitor_temperatura_obtener_estimada(&t) || t > maximo_permitido) {
         reiniciar_estabilidad();
         return false;
     }
@@ -163,13 +175,24 @@ static bool temperatura_estable(int64_t ahora_us, float *temperatura_estable_c)
     return true;
 }
 
-static void preparar_alerta(origen_alerta_t origen, resultado_vision_t vision, float temperatura_c)
+static void preparar_alerta(origen_alerta_t origen, resultado_vision_t vision, const detalle_vision_t *detalle,
+                            float temperatura_c)
 {
+    const bool por_temperatura = origen == ORIGEN_ANOMALIA_TEMPERATURA;
+    float medida_c = NAN;
+    if (por_temperatura) {
+        medida_c = s_maquina.ultimo_evento.medida_c;
+    } else if (!monitor_temperatura_obtener_medida(&medida_c)) {
+        medida_c = NAN;
+    }
     const alerta_t alerta = {
         .origen = origen,
         .evento = s_maquina.ultimo_evento.tipo,
+        .motivo = por_temperatura ? s_maquina.ultimo_evento.motivo : MOTIVO_NINGUNO,
         .vision = vision,
+        .vision_detalle = detalle ? *detalle : (detalle_vision_t){ .valido = false },
         .temperatura_c = temperatura_c,
+        .medida_c = medida_c,
         .tasa_c_por_min = origen == ORIGEN_ANOMALIA_TEMPERATURA ? s_maquina.ultimo_evento.tasa_c_por_min : 0.0f,
         .marca_us = esp_timer_get_time(),
     };
@@ -185,7 +208,7 @@ static void preparar_cierre_directo(origen_alerta_t origen)
     if (!monitor_temperatura_obtener_estimada(&temperatura_c)) {
         temperatura_c = NAN;
     }
-    preparar_alerta(origen, VISION_SIN_RIESGO, temperatura_c);
+    preparar_alerta(origen, VISION_SIN_RIESGO, NULL, temperatura_c);
     cambiar_estado(ESTADO_SISTEMA_CIERRE_AUTOMATICO);
 }
 
@@ -236,7 +259,7 @@ static void ejecutar_monitoreo(void)
     if (temperatura_estable(ahora, &temperatura_estable_c)) {
         ESP_LOGI(TAG, "Temperatura ambiente estable en %.1f °C durante %" PRIu32 " s: se verifica con la cámara",
                  temperatura_estable_c, s_maquina.config.estabilidad_autocalibracion_s);
-        preparar_alerta(ORIGEN_AUTOCALIBRACION, VISION_SIN_RIESGO, temperatura_estable_c);
+        preparar_alerta(ORIGEN_AUTOCALIBRACION, VISION_SIN_RIESGO, NULL, temperatura_estable_c);
         cambiar_estado(ESTADO_SISTEMA_AUTOCALIBRACION);
     }
 }
@@ -267,7 +290,8 @@ static void ejecutar_validar_presencia(void)
 
 static void ejecutar_deteccion_visual(void)
 {
-    const resultado_vision_t resultado = accion_detectar_fuego_humo();
+    detalle_vision_t detalle;
+    const resultado_vision_t resultado = accion_detectar_fuego_humo(&detalle);
     atender_eventos(0);
 
     if (resultado == VISION_SIN_RIESGO) {
@@ -278,7 +302,7 @@ static void ejecutar_deteccion_visual(void)
     if (resultado == VISION_ERROR) {
         ESP_LOGW(TAG, "La visión falló: se trata como positivo (falla segura)");
     }
-    preparar_alerta(ORIGEN_ANOMALIA_TEMPERATURA, resultado, s_maquina.ultimo_evento.temperatura_c);
+    preparar_alerta(ORIGEN_ANOMALIA_TEMPERATURA, resultado, &detalle, s_maquina.ultimo_evento.temperatura_c);
     cambiar_estado(ESTADO_SISTEMA_ALERTA_USUARIO);
 }
 
@@ -359,16 +383,25 @@ static void ejecutar_bloqueado(void)
     }
 }
 
+// Verificación de una temperatura estable. Sin anomalía de temperatura, ver fuego o humo una vez suele
+// ser un falso positivo: solo se alerta si se repite en `verificaciones_para_alertar` verificaciones seguidas
 static void ejecutar_autocalibracion(void)
 {
+    const maquina_estados_config_t *cfg = &s_maquina.config;
     const float temperatura_c = s_maquina.alerta.temperatura_c;
-    const resultado_vision_t resultado = accion_detectar_fuego_humo();
+    detalle_vision_t detalle;
+    const resultado_vision_t resultado = accion_detectar_fuego_humo(&detalle);
     atender_eventos(0);
     reiniciar_estabilidad();
 
     switch (resultado) {
     case VISION_SIN_RIESGO:
+        s_maquina.verificaciones_con_riesgo = 0;
         monitor_temperatura_establecer_linea_base(temperatura_c);
+        if (temperatura_c > cfg->temperatura_maxima_linea_base_c) {
+            ESP_LOGI(TAG, "Día caluroso: línea base de %.1f °C aceptada (subida lenta y sin riesgo en la cámara)",
+                     temperatura_c);
+        }
         cambiar_estado(ESTADO_SISTEMA_MONITOREO);
         break;
     case VISION_ERROR:
@@ -377,13 +410,28 @@ static void ejecutar_autocalibracion(void)
         cambiar_estado(ESTADO_SISTEMA_MONITOREO);
         break;
     case VISION_HUMO:
-    case VISION_FUEGO:
-        ESP_LOGW(TAG, "La verificación de temperatura estable encontró %s", accion_nombre_vision(resultado));
+    case VISION_FUEGO: {
+        s_maquina.verificaciones_con_riesgo++;
+        const bool en_silencio = esp_timer_get_time() < s_maquina.silencio_hasta_us;
+        if (s_maquina.verificaciones_con_riesgo < cfg->verificaciones_para_alertar || en_silencio) {
+            // La evidencia ya quedó en la SD; la siguiente verificación será en estabilidad_autocalibracion_s
+            ESP_LOGW(TAG, "Verificación automática %" PRIu32 " de %" PRIu32 " vio %s sin anomalía de temperatura: "
+                     "posible falso positivo, no se registra la línea base%s",
+                     s_maquina.verificaciones_con_riesgo, cfg->verificaciones_para_alertar,
+                     accion_nombre_vision(resultado), en_silencio ? " (silencio tras una respuesta)" : "");
+            cambiar_estado(ESTADO_SISTEMA_MONITOREO);
+            break;
+        }
+        ESP_LOGW(TAG, "%" PRIu32 " verificaciones seguidas vieron %s: se alerta al usuario",
+                 s_maquina.verificaciones_con_riesgo, accion_nombre_vision(resultado));
+        s_maquina.verificaciones_con_riesgo = 0;
         taskENTER_CRITICAL(&s_maquina.cerrojo_alerta);
         s_maquina.alerta.vision = resultado;
+        s_maquina.alerta.vision_detalle = detalle;
         taskEXIT_CRITICAL(&s_maquina.cerrojo_alerta);
         cambiar_estado(ESTADO_SISTEMA_ALERTA_USUARIO);
         break;
+    }
     }
 }
 
@@ -602,6 +650,11 @@ void maquina_estados_obtener_calibracion_estufa(calibracion_estufa_t *calibracio
     taskENTER_CRITICAL(&s_maquina.cerrojo_alerta);
     *calibracion = s_maquina.calibracion_estufa;
     taskEXIT_CRITICAL(&s_maquina.cerrojo_alerta);
+}
+
+void maquina_estados_registrar_aviso_fase(aviso_cambio_fase_t aviso)
+{
+    s_maquina.aviso_fase = aviso;
 }
 
 estado_sistema_t maquina_estados_obtener_estado(void)

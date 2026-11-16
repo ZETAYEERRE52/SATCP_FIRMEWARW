@@ -82,10 +82,26 @@ static void datos_estufa(cJSON *datos)
     }
 }
 
-static cJSON *datos_estado(void)
+static void datos_vision_detalle(cJSON *datos_alerta, const detalle_vision_t *detalle)
+{
+    if (!detalle->valido) {
+        cJSON_AddNullToObject(datos_alerta, "vision_detalle");
+        return;
+    }
+    cJSON *vision = cJSON_AddObjectToObject(datos_alerta, "vision_detalle");
+    cJSON *votos = cJSON_AddObjectToObject(vision, "votos");
+    cJSON_AddNumberToObject(votos, "fuego", detalle->votos_fuego);
+    cJSON_AddNumberToObject(votos, "humo", detalle->votos_humo);
+    cJSON_AddNumberToObject(votos, "normal", detalle->votos_normal);
+    cJSON_AddNumberToObject(vision, "clasificados", detalle->clasificados);
+    cJSON_AddNumberToObject(vision, "probabilidad_max", redondear(detalle->probabilidad_max, 2));
+}
+
+// `fase` es la del cambio que se anuncia: puede haber durado menos que el envío (p. ej. VALIDAR_PRESENCIA)
+static cJSON *datos_estado(estado_sistema_t fase)
 {
     cJSON *datos = cJSON_CreateObject();
-    cJSON_AddStringToObject(datos, "fase", maquina_estados_nombre(maquina_estados_obtener_estado()));
+    cJSON_AddStringToObject(datos, "fase", maquina_estados_nombre(fase));
 
     cJSON *temperatura = cJSON_AddObjectToObject(datos, "temperatura");
     cJSON_AddBoolToObject(temperatura, "sensor_ok", monitor_temperatura_sensor_ok());
@@ -125,11 +141,21 @@ static cJSON *datos_estado(void)
         cJSON_AddStringToObject(datos_alerta, "vision", accion_nombre_vision(alerta.vision));
         cJSON_AddNumberToObject(datos_alerta, "temperatura", redondear(alerta.temperatura_c, 1));
         cJSON_AddStringToObject(datos_alerta, "origen", accion_nombre_origen(alerta.origen));
+        // Campos agregados en 2.2.0 (opcionales para la app)
+        if (alerta.motivo != MOTIVO_NINGUNO) {
+            cJSON_AddStringToObject(datos_alerta, "motivo", monitor_temperatura_nombre_motivo(alerta.motivo));
+        } else {
+            cJSON_AddNullToObject(datos_alerta, "motivo");
+        }
+        if (isnan(alerta.medida_c)) {
+            cJSON_AddNullToObject(datos_alerta, "medida");
+        } else {
+            cJSON_AddNumberToObject(datos_alerta, "medida", redondear(alerta.medida_c, 1));
+        }
+        datos_vision_detalle(datos_alerta, &alerta.vision_detalle);
         cJSON_AddNumberToObject(datos_alerta, "cierre_en_s", cierre_en);
-        cJSON_AddBoolToObject(datos_alerta, "admite_respuesta",
-                              maquina_estados_obtener_estado() == ESTADO_SISTEMA_ALERTA_USUARIO);
-        cJSON_AddBoolToObject(datos_alerta, "requiere_rearme",
-                              maquina_estados_obtener_estado() == ESTADO_SISTEMA_BLOQUEADO);
+        cJSON_AddBoolToObject(datos_alerta, "admite_respuesta", fase == ESTADO_SISTEMA_ALERTA_USUARIO);
+        cJSON_AddBoolToObject(datos_alerta, "requiere_rearme", fase == ESTADO_SISTEMA_BLOQUEADO);
     } else {
         cJSON_AddNullToObject(datos, "alerta");
     }
@@ -441,7 +467,7 @@ char *protocolo_procesar(const char *mensaje, transporte_t transporte, imagen_pe
         cJSON_AddItemToObject(respuesta, "datos", datos_info());
     } else if (strcmp(cmd, "estado") == 0) {
         respuesta = crear_respuesta(cmd, id, true);
-        cJSON_AddItemToObject(respuesta, "datos", datos_estado());
+        cJSON_AddItemToObject(respuesta, "datos", datos_estado(maquina_estados_obtener_estado()));
     } else if (strcmp(cmd, "foto") == 0) {
         respuesta = comando_foto(raiz, id, transporte, imagen);
     } else if (strcmp(cmd, "responder") == 0) {
@@ -498,10 +524,15 @@ char *protocolo_procesar(const char *mensaje, transporte_t transporte, imagen_pe
 
 char *protocolo_evento_estado(void)
 {
+    return protocolo_evento_estado_fase(maquina_estados_obtener_estado());
+}
+
+char *protocolo_evento_estado_fase(estado_sistema_t fase)
+{
     cJSON *evento = cJSON_CreateObject();
     cJSON_AddStringToObject(evento, "tipo", "evento");
     cJSON_AddStringToObject(evento, "evento", "estado");
-    cJSON_AddItemToObject(evento, "datos", datos_estado());
+    cJSON_AddItemToObject(evento, "datos", datos_estado(fase));
     char *texto = cJSON_PrintUnformatted(evento);
     cJSON_Delete(evento);
     return texto;

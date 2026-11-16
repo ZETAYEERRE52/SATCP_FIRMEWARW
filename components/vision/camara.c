@@ -113,6 +113,18 @@ esp_err_t camara_modo_vivo(bool activo, TickType_t espera)
     return ret;
 }
 
+static volatile bool s_prioridad_vision;
+
+void camara_prioridad_vision(bool activa)
+{
+    s_prioridad_vision = activa;
+}
+
+bool camara_prioridad_vision_activa(void)
+{
+    return s_prioridad_vision;
+}
+
 bool camara_disponible(void)
 {
     return s_mutex != NULL;

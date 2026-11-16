@@ -42,6 +42,13 @@ void camara_liberar(camera_fb_t *cuadro);
  */
 esp_err_t camara_modo_vivo(bool activo, TickType_t espera);
 
+/**
+ * La fase visual de la vigilancia toma la cámara: mientras está activa, el video en vivo deja de
+ * capturar para que la vigilancia nunca espere un cuadro.
+ */
+void camara_prioridad_vision(bool activa);
+bool camara_prioridad_vision_activa(void);
+
 bool camara_disponible(void);
 
 #ifdef __cplusplus
